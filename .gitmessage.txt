@@ -1,0 +1,16 @@
+# Conventional Commits Guide
+# Format: type(scope?): subject
+# Types: feat | fix | docs | style | refactor | perf | test | chore | build | ci | revert
+# Examples:
+#   feat(api): add user login endpoint
+#   fix(auth): handle token refresh bug
+#   docs(readme): update installation steps
+#   chore(deps): bump eslint to v9
+#
+# Body (optional, wrap at 72 chars):
+# - Explain what and why (not how)
+#
+# Footer (optional):
+# - BREAKING CHANGE: ...
+# - Closes #123
+
