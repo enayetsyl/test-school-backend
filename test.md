@@ -44,11 +44,11 @@
     "prepare": "husky"
   },
   "lint-staged": {
-    "*.{ts,tsx,js,jsx}": [
+    "src/**/*.{ts,tsx,js,jsx}": [
       "eslint --fix",
       "prettier --write"
     ],
-    "*.{json,md,css}": [
+    "*.{json,md,css,yml,yaml}": [
       "prettier --write"
     ]
   },
@@ -104,6 +104,7 @@
   }
 }
 
+
 ```
 
 ```javascript
@@ -116,7 +117,10 @@ import importPlugin from 'eslint-plugin-import';
 
 export default tseslint.config(js.configs.recommended, ...tseslint.configs.recommended, {
   languageOptions: {
-    globals: { ...globals.node },
+    sourceType: 'module',
+    globals: {
+      ...globals.node, // <-- use imported globals, not require()
+    },
   },
   plugins: {
     import: importPlugin,
@@ -126,7 +130,7 @@ export default tseslint.config(js.configs.recommended, ...tseslint.configs.recom
     '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
 
-    'no-console': ['warn', { allow: ['error'] }],
+    'no-console': ['warn', { allow: ['error', 'warn', 'info'] }],
   },
 });
 ```
@@ -277,6 +281,8 @@ dotenv.config();
 
 // import { errorHandler } from './middleware/error.middleware';
 import routes from './routes';
+import { respondMiddleware } from './middleware/respond.middleware';
+import { errorHandler } from './middleware/errorHandler.middleware';
 
 const app = express();
 
@@ -286,12 +292,13 @@ app.use(cors({ origin: process.env.CLIENT_URL, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(morgan('dev'));
+app.use(respondMiddleware);
 
 // Routes
 app.use('/api/v1', routes);
 
 // Error handler
-// app.use(errorHandler);
+app.use(errorHandler);
 
 export default app;
 ```
@@ -497,11 +504,131 @@ export const authLimiter = rateLimit({
 ```
 
 ```javascript
+// src/middleware/respond.middleware.ts
+import type { NextFunction, Response, Request } from 'express';
+import type { Meta } from '../types/api';
+
+declare module 'express-serve-static-core' {
+  interface Response {
+    ok: <T>(data: T, message?: string, meta?: Meta) => Response;
+    created: <T>(data: T, message?: string, meta?: Meta) => Response;
+    noContent: () => Response;
+    paginated: <T>(items: T[], meta: { page: number; limit: number; total: number }, message?: string) => Response;
+  }
+}
+
+export function respondMiddleware(_req: Request, res: Response, next: NextFunction) {
+  res.ok = function <T>(data: T, message?: string, meta?: Meta) {
+    return this.status(200).json({ success: true, data, ...(message && { message }), ...(meta && { meta }) });
+  };
+  res.created = function <T>(data: T, message?: string, meta?: Meta) {
+    return this.status(201).json({ success: true, data, ...(message && { message }), ...(meta && { meta }) });
+  };
+  res.noContent = function () {
+    return this.status(204).end();
+  };
+  res.paginated = function <T>(
+    items: T[],
+    meta: { page: number; limit: number; total: number },
+    message?: string,
+  ) {
+    return this.status(200).json({ success: true, data: items, ...(message && { message }), meta });
+  };
+  next();
+}
+
+```
+
+```javascript
 // src/middleware/seb.middleware.ts
 ```
 
 ```javascript
 // src/middleware/validation.middleware.ts
+import type { Request, Response, NextFunction } from 'express';
+import type { ZodError, ZodTypeAny } from 'zod';
+
+type SchemaParts = {
+  body?: ZodTypeAny;
+  query?: ZodTypeAny;
+  params?: ZodTypeAny;
+};
+
+// Narrower and eslint-safe check (no `any`)
+function isZodSchema(s: unknown): s is ZodTypeAny {
+  return !!s && typeof (s as ZodTypeAny).safeParse === 'function';
+}
+
+/**
+ * Creates an Express middleware for validating request parts
+ * using a Zod schema. Returns formatted error responses on failure.
+ *
+ * @param schema Zod schema or object with keys { body, query, params }
+ */
+export const validate =
+  (schema: ZodTypeAny | SchemaParts) =>
+  (req: Request, res: Response, next: NextFunction) => {
+    try {
+      if (isZodSchema(schema)) {
+        // Single schema → validate body
+        const result = schema.safeParse(req.body);
+        if (!result.success) {
+          return sendZodError(res, result.error);
+        }
+        req.body = result.data;
+      } else {
+        // Multiple parts: body/query/params
+        if (schema.body) {
+          const parsed = schema.body.safeParse(req.body);
+          if (!parsed.success) {
+            return sendZodError(res, parsed.error);
+          }
+          req.body = parsed.data;
+        }
+        if (schema.query) {
+          const parsed = schema.query.safeParse(req.query);
+          if (!parsed.success) {
+            return sendZodError(res, parsed.error);
+          }
+          req.query =  parsed.data as unknown as Request['query'];
+        }
+        if (schema.params) {
+          const parsed = schema.params.safeParse(req.params);
+          if (!parsed.success) {
+            return sendZodError(res, parsed.error);
+          }
+          req.params = parsed.data as unknown as Request['params'];
+        }
+      }
+      return next();
+    } catch  {
+      return res.status(500).json({
+        success: false,
+        code: 'SERVER_ERROR',
+        message: 'Validation middleware error',
+      });
+    }
+  };
+
+/**
+ * Maps ZodError to the API error format defined in project rules.
+ */
+function sendZodError(res: Response, error: ZodError) {
+  const firstIssue = error.issues[0];
+  return res.status(400).json({
+    success: false,
+    code: 'VALIDATION_ERROR',
+    message: firstIssue?.message ?? 'Invalid request',
+    details: {
+      field: firstIssue?.path?.join('.') ?? undefined,
+      issues: error.issues.map((i) => ({
+        path: i.path,
+        message: i.message,
+      })),
+    },
+  });
+}
+
 ```
 
 ```javascript
@@ -626,6 +753,19 @@ export const authLimiter = rateLimit({
 
 ```javascript
 // src/sockets/exam.socket.ts
+```
+
+```javascript
+// src/types/api.ts
+export type Meta = Record<string, unknown> | undefined;
+
+export interface ApiSuccess<T = unknown> {
+  success: true;
+  data: T;
+  message?: string;
+  meta?: Meta;
+}
+
 ```
 
 ```javascript
@@ -878,7 +1018,71 @@ export async function verifyOtp(otp: string, otpHash: string): Promise<boolean> 
 ```
 
 ```javascript
+import type { Request } from 'express';
+import type { Model, FilterQuery } from 'mongoose';
+
+export interface PaginationOptions {
+  defaultLimit?: number;
+  maxLimit?: number;
+}
+
+export async function paginate<T>(
+  model: Model<T>,
+  req: Request,
+  filter: FilterQuery<T> = {},
+  options: PaginationOptions = {},
+) {
+  const page = Math.max(parseInt(req.query.page as string) || 1, 1);
+  const limit = Math.min(
+    parseInt(req.query.limit as string) || options.defaultLimit || 10,
+    options.maxLimit || 100,
+  );
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    model.find(filter).skip(skip).limit(limit),
+    model.countDocuments(filter),
+  ]);
+
+  return { items, meta: { page, limit, total } };
+}
+
+```
+
+```javascript
 // src/utils/pdf.ts
+```
+
+```javascript
+// src/utils/respond.ts
+import type { Response } from 'express';
+import type { ApiSuccess, Meta } from '../types/api';
+
+export function sendOk<T>(res: Response, data: T, message?: string, meta?: Meta) {
+  const body: ApiSuccess<T> = { success: true, data, ...(message && { message }), ...(meta && { meta }) };
+  return res.status(200).json(body);
+}
+
+export function sendCreated<T>(res: Response, data: T, message?: string, meta?: Meta) {
+  const body: ApiSuccess<T> = { success: true, data, ...(message && { message }), ...(meta && { meta }) };
+  return res.status(201).json(body);
+}
+
+export function sendNoContent(res: Response) {
+  // Prefer true 204 with no body
+  return res.status(204).end();
+}
+
+// Convenience for paginated lists
+export function sendPaginated<T>(
+  res: Response,
+  items: T[],
+  meta: { page: number; limit: number; total: number },
+  message?: string,
+) {
+  return sendOk(res, items, message, meta);
+}
+
 ```
 
 ```javascript
