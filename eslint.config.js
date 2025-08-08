@@ -6,8 +6,11 @@ import importPlugin from 'eslint-plugin-import';
 
 export default tseslint.config(js.configs.recommended, ...tseslint.configs.recommended, {
   languageOptions: {
-    globals: { ...globals.node },
-  },
+      sourceType: 'module',
+      globals: {
+        ...globals.node,               // <-- use imported globals, not require()
+      },
+    },
   plugins: {
     import: importPlugin,
   },
@@ -16,6 +19,6 @@ export default tseslint.config(js.configs.recommended, ...tseslint.configs.recom
     '@typescript-eslint/no-explicit-any': 'error',
     '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
 
-    'no-console': ['warn', { allow: ['error'] }],
+    "no-console": ["warn", { allow: ["error", "warn", "info"] }],
   },
 });
