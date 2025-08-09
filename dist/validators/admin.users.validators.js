@@ -1,3 +1,4 @@
+// validators/admin.user.validators.ts
 import { z } from 'zod';
 export const UserIdParams = {
     params: z.object({ id: z.string().min(1) }),
