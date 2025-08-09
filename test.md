@@ -558,6 +558,189 @@ export const getSessionCtrl: RequestHandler = async (req, res) => {
 ```
 
 ```javascript
+// src/controllers/admin.audio.controller.ts
+import type { Request, Response } from 'express';
+import mongoose, { Types, type FilterQuery } from 'mongoose';
+import { type ListAuditQueryInput } from '../validators/admin.audit.validators';
+import { type AuditLogDoc } from '../models/AuditLog';
+
+// Prefer importing your model if exported:
+//   import { AuditLog } from '../models/auditLog.model';
+const AuditLog = mongoose.model('AuditLog');
+
+export async function listAuditLogsCtrl(req: Request, res: Response) {
+  const { page, limit, actorId, action, resource, from, to, q } =
+    req.query as unknown as ListAuditQueryInput;
+
+  const filter: FilterQuery<AuditLogDoc> = {};
+  if (actorId) filter.actor = new Types.ObjectId(actorId);
+
+  if (actorId) filter.actor = actorId;
+  if (action) filter.action = action;
+  if (resource) filter.resource = resource;
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = from;
+    if (to) filter.createdAt.$lte = to;
+  }
+  if (q?.trim()) {
+    const t = q.trim();
+    filter.$or = [
+      { message: { $regex: t, $options: 'i' } },
+      { 'meta.note': { $regex: t, $options: 'i' } },
+    ];
+  }
+
+  const pageNum = Number(page) || 1;
+  const lim = Number(limit) || 20;
+  const skip = (pageNum - 1) * lim;
+
+  const [items, total] = await Promise.all([
+    AuditLog.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(lim)
+      .populate({ path: 'actor', select: 'name email role' })
+      .select('_id action resource resourceId message meta createdAt actor')
+      .lean(),
+    AuditLog.countDocuments(filter),
+  ]);
+
+  return res.json({
+    success: true,
+    meta: { page: pageNum, limit: lim, total, pageCount: Math.ceil(total / lim) },
+    data: items,
+  });
+}
+
+```
+
+```javascript
+// src/controllers/admin.users.controller.ts
+import type { Request, Response } from 'express';
+import mongoose from 'mongoose';
+import bcrypt from 'bcryptjs';
+import { type ListUsersQueryInput } from '../validators/admin.users.validators';
+import { type AccessTokenPayload } from '../utils/jwt';
+import { MongoServerError } from 'mongodb';
+
+type AuthedRequest = Request & { user?: AccessTokenPayload };
+
+// Prefer importing your actual model if exported:
+//   import { User } from '../models/user.model';
+// Fallback to global registry:
+const User = mongoose.model('User');
+
+export async function listUsersCtrl(req: Request, res: Response) {
+  const { page, limit, q, role, status } = req.query as unknown as ListUsersQueryInput; // ← double-cast
+
+  const pageNum = Number(page) || 1;
+  const lim = Number(limit) || 20;
+  const skip = (pageNum - 1) * lim;
+
+  const filter: Record<string, unknown> = {};
+  if (role) filter.role = role;
+  if (status) filter.status = status;
+  if (q?.trim()) {
+    const t = q.trim();
+    filter.$or = [{ name: { $regex: t, $options: 'i' } }, { email: { $regex: t, $options: 'i' } }];
+  }
+
+  const [items, total] = await Promise.all([
+    User.find(filter)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(lim)
+      .select('_id name email role status createdAt updatedAt')
+      .lean(),
+    User.countDocuments(filter),
+  ]);
+
+  return res.json({
+    success: true,
+    meta: { page: pageNum, limit: lim, total, pageCount: Math.ceil(total / lim) },
+    data: items,
+  });
+}
+
+export async function getUserCtrl(req: Request, res: Response) {
+  const { id } = req.params;
+  const doc = await User.findById(id)
+    .select('_id name email role status createdAt updatedAt')
+    .lean();
+  if (!doc) return res.status(404).json({ success: false, message: 'User not found' });
+  return res.json({ success: true, data: doc });
+}
+
+export async function createUserCtrl(req: Request, res: Response) {
+  const { name, email, role, password } = req.body as {
+    name: string;
+    email: string;
+    role: 'admin' | 'student' | 'supervisor';
+    password: string;
+  };
+
+  const existing = await User.findOne({ email });
+  if (existing) return res.status(409).json({ success: false, message: 'Email already in use' });
+
+  const hash = await bcrypt.hash(password, 10);
+  const created = await User.create({ name, email, role, password: hash, status: 'active' });
+
+  return res.status(201).json({
+    success: true,
+    message: 'User created',
+    data: {
+      _id: created._id,
+      name: created.name,
+      email: created.email,
+      role: created.role,
+      status: created.status,
+    },
+  });
+}
+
+export async function updateUserCtrl(req: AuthedRequest, res: Response) {
+  const { id } = req.params;
+  const actorId = req.user?.sub;
+
+  const updates: Record<string, unknown> = {};
+  for (const k of ['name', 'role', 'status'] as const) {
+    if (k in req.body) updates[k] = req.body[k];
+  }
+  if ('password' in req.body) {
+    updates.password = await bcrypt.hash(req.body.password, 10);
+  }
+
+  // Safeguards: cannot disable yourself; cannot change own role
+  if (actorId && id === actorId) {
+    if ('status' in updates && updates.status === 'disabled') {
+      return res
+        .status(400)
+        .json({ success: false, message: 'You cannot disable your own account' });
+    }
+    if ('role' in updates) {
+      return res.status(400).json({ success: false, message: 'You cannot change your own role' });
+    }
+  }
+
+  try {
+    const updated = await User.findByIdAndUpdate(
+      id,
+      { $set: updates },
+      { new: true, runValidators: true },
+    ).select('_id name email role status createdAt updatedAt');
+    if (!updated) return res.status(404).json({ success: false, message: 'User not found' });
+    return res.json({ success: true, message: 'User updated', data: updated });
+  } catch (err) {
+    if (err instanceof MongoServerError && err.code === 11000) {
+      return res.status(409).json({ success: false, message: 'Email already in use' });
+    }
+    throw err;
+  }
+}
+```
+
+```javascript
 // src/controllers/auth.controller.ts
 import type { Request, Response } from 'express';
 import type { UserDoc } from '../models/User';
@@ -2056,6 +2239,53 @@ export default router;
 ```
 
 ```javascript
+// src/routes/admin.audit.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { listAuditLogsCtrl } from '../controllers/admin.audit.controller';
+import { ListAuditQuery } from '../validators/admin.audit.validators';
+
+const router = Router();
+router.use(requireAuth, requireRole('admin', 'supervisor'));
+
+router.get('/', validate(ListAuditQuery), listAuditLogsCtrl);
+
+export default router;
+```
+
+```javascript
+// src/routes/admin.users.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  listUsersCtrl,
+  getUserCtrl,
+  createUserCtrl,
+  updateUserCtrl,
+} from '../controllers/admin.users.controller';
+import {
+  ListUsersQuery,
+  UserIdParams,
+  CreateUserSchema,
+  UpdateUserSchema,
+} from '../validators/admin.users.validators';
+
+const router = Router();
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/', validate(ListUsersQuery), listUsersCtrl);
+router.get('/:id', validate(UserIdParams), getUserCtrl);
+router.post('/', validate(CreateUserSchema), createUserCtrl);
+router.patch('/:id', validate({ ...UserIdParams, ...UpdateUserSchema }), updateUserCtrl);
+
+export default router;
+```
+
+```javascript
 // src/routes/certification.routes.ts
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
@@ -2242,6 +2472,8 @@ import examRoutes from './exam.routes';
 import certificationRoutes from './certification.routes';
 import adminConfigRoutes from './config.routes';
 import adminSessionsRoutes from './admin.sessions.routes';
+import adminUsersRoutes from './admin.users.routes';
+import adminAuditRoutes from './admin.audit.routes';
 
 const router = Router();
 
@@ -2255,6 +2487,8 @@ router.use('/exam', examRoutes);
 router.use('/certifications', certificationRoutes);
 router.use('/admin/config', adminConfigRoutes);
 router.use('/admin/sessions', adminSessionsRoutes);
+router.use('/admin/users', adminUsersRoutes);
+router.use('/admin/audit-logs', adminAuditRoutes);
 
 export default router;
 ```
@@ -4225,6 +4459,64 @@ export const SessionIdParams = {
 // ✅ export TS types for safe casting in controllers
 export type ListSessionsQueryType = z.infer<typeof ListSessionsQuery.query>;
 export type SessionIdParamsType = z.infer<typeof SessionIdParams.params>;
+
+```
+
+```javascript
+// validators/admin.user.validators.ts
+import { z } from 'zod';
+
+export const UserIdParams = {
+  params: z.object({ id: z.string().min(1) }),
+};
+
+export const CreateUserSchema = {
+  body: z.object({
+    name: z.string().trim().min(1),
+    email: z.string().email(),
+    role: z.enum(['admin', 'student', 'supervisor']),
+    password: z.string().min(8), // require explicit password
+  }),
+};
+
+export const UpdateUserSchema = {
+  body: z
+    .object({
+      name: z.string().trim().min(1).optional(),
+      role: z.enum(['admin', 'student', 'supervisor']).optional(),
+      status: z.enum(['active', 'disabled']).optional(),
+      password: z.string().min(8).optional(),
+    })
+    .refine((b) => Object.keys(b).length > 0, { message: 'Provide at least one field.' }),
+};
+
+export const ListUsersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  q: z.string().trim().optional(),
+  role: z.enum(['admin', 'student', 'supervisor']).optional(),
+  status: z.enum(['active', 'disabled']).optional(),
+});
+export const ListUsersQuery = { query: ListUsersQuerySchema };
+export type ListUsersQueryInput = z.infer<typeof ListUsersQuerySchema>;
+
+```
+
+```javascript
+// validators/admin.audit.validators.ts
+import { z } from 'zod';
+export const ListAuditQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  actorId: z.string().optional(),
+  action: z.string().trim().optional(),
+  resource: z.string().trim().optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  q: z.string().trim().optional(),
+});
+export const ListAuditQuery = { query: ListAuditQuerySchema };
+export type ListAuditQueryInput = z.infer<typeof ListAuditQuerySchema>;
 
 ```
 
