@@ -1,3 +1,5 @@
+// src/config/env.ts
+import path from 'node:path';
 import { config } from 'dotenv';
 import { z } from 'zod';
 
@@ -31,8 +33,8 @@ const EnvSchema = z.object({
   SMTP_PASS: z.string().min(1),
   SMTP_FROM: z.string().min(1),
 
-  UPLOAD_DIR: z.string().default('/tmp/testschool/uploads'),
-  VIDEO_DIR: z.string().default('/tmp/testschool/videos'),
+  UPLOAD_DIR: z.string().default('storage/uploads'),
+  VIDEO_DIR: z.string().default('storage/videos'),
 
   SEB_MODE: z.enum(['block', 'warn']).default('block'),
   TIME_PER_QUESTION_SECONDS: z.coerce.number().default(60),
@@ -51,5 +53,14 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+const raw = parsed.data;
+
+// Normalize paths to ABSOLUTE (so Windows `\tmp\...` confusion goes away)
+const resolveAbs = (p: string) => (path.isAbsolute(p) ? p : path.resolve(process.cwd(), p));
+
+export const env = {
+  ...raw,
+  UPLOAD_DIR: resolveAbs(raw.UPLOAD_DIR),
+  VIDEO_DIR: resolveAbs(raw.VIDEO_DIR),
+} as const;
 export const isProd = env.NODE_ENV === 'production';

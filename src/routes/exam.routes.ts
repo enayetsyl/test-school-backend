@@ -11,6 +11,7 @@ import {
   SubmitBody,
   ViolationBody,
   SessionIdParams,
+  UploadChunkQuery,
 } from '../validators/exam.validators';
 import {
   startCtrl,
@@ -19,6 +20,8 @@ import {
   statusCtrl,
   violationCtrl,
 } from '../controllers/exam.controller';
+
+import { chunkUploadMulter, uploadChunkCtrl } from '../controllers/video.controller';
 
 const router = Router();
 
@@ -44,5 +47,12 @@ router.get('/status/:sessionId', validate({ params: SessionIdParams }), statusCt
 
 // Violations (allow even if SEB warn mode)
 router.post('/violation', validate(ViolationBody), violationCtrl);
+
+router.post(
+  '/video/upload-chunk',
+  validate({ query: UploadChunkQuery }),
+  chunkUploadMulter,
+  uploadChunkCtrl,
+);
 
 export default router;

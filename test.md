@@ -260,6 +260,8 @@ const io = new SocketIOServer(server, {
 });
 
 connectDB();
+scheduleAutoSubmitExpiredExamsJob();
+scheduleCleanupOldVideosJob(2);
 
 // Socket events setup can go here or in src/config/socket.ts
 io.on('connection', (socket) => {
@@ -323,6 +325,8 @@ export const connectDB = async () => {
 ```
 
 ```javascript
+// src/config/env.ts
+import path from 'node:path';
 import { config } from 'dotenv';
 import { z } from 'zod';
 
@@ -356,8 +360,8 @@ const EnvSchema = z.object({
   SMTP_PASS: z.string().min(1),
   SMTP_FROM: z.string().min(1),
 
-  UPLOAD_DIR: z.string().default('/tmp/testschool/uploads'),
-  VIDEO_DIR: z.string().default('/tmp/testschool/videos'),
+   UPLOAD_DIR: z.string().default('storage/uploads'),
+  VIDEO_DIR: z.string().default('storage/videos'),
 
   SEB_MODE: z.enum(['block', 'warn']).default('block'),
   TIME_PER_QUESTION_SECONDS: z.coerce.number().default(60),
@@ -376,8 +380,18 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+const raw = parsed.data;
+
+// Normalize paths to ABSOLUTE (so Windows `\tmp\...` confusion goes away)
+const resolveAbs = (p: string) => (path.isAbsolute(p) ? p : path.resolve(process.cwd(), p));
+
+export const env = {
+  ...raw,
+  UPLOAD_DIR: resolveAbs(raw.UPLOAD_DIR),
+  VIDEO_DIR: resolveAbs(raw.VIDEO_DIR),
+} as const;
 export const isProd = env.NODE_ENV === 'production';
+
 ```
 
 ```javascript
@@ -810,6 +824,51 @@ export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
 
 ```javascript
 // src/controllers/video.controller.ts
+import type { RequestHandler } from 'express';
+import multer from 'multer';
+import { asyncHandler } from '../utils/asyncHandler';
+import { saveChunk } from '../services/video.service';
+import { UploadChunkQuery } from '../validators/exam.validators';
+import { AppError } from '../utils/error';
+
+// Multer (memory): simple & safe for < ~10–20MB per chunk.
+// If you expect very large chunks, switch to diskStorage.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB/chunk max
+});
+
+type MulterReq = Parameters<typeof upload.single>[0];
+
+export const chunkMulter: MulterReq = 'chunk';
+
+export const uploadChunkCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const parsed = UploadChunkQuery.safeParse(req.query);
+  if (!parsed.success) {
+    throw new AppError('VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'Invalid query', 400);
+  }
+  const { sessionId, index } = parsed.data;
+
+  const file = (req as unknown as { file?: Express.Multer.File }).file;
+  if (!file || !file.buffer) {
+    throw new AppError('VALIDATION_ERROR', 'Missing file field "chunk"', 400);
+  }
+
+  const out = await saveChunk({
+    userId: req.user!.sub,
+    sessionId,
+    index,
+    buffer: file.buffer,
+    mime: file.mimetype,
+  });
+
+  return res.ok(out, 'Chunk stored');
+});
+
+// Export the multer middleware so routes can compose:
+// router.post(..., chunkUploadMulter, uploadChunkCtrl)
+export const chunkUploadMulter = upload.single('chunk');
+
 ```
 
 ```javascript
@@ -839,6 +898,43 @@ export function scheduleAutoSubmitExpiredExamsJob() {
 
 ```javascript
 // src/jobs/cleanupOldVideos.job.ts
+import cron from 'node-cron';
+import path from 'node:path';
+import fs from 'fs-extra';
+import { env } from '../config/env';
+
+/**
+ * Deletes session video directories older than a threshold.
+ * Run daily at 02:30 AM.
+ */
+export function scheduleCleanupOldVideosJob(days = 2) {
+  cron.schedule('30 2 * * *', async () => {
+    const base = env.VIDEO_DIR;
+    try {
+      const exists = await fs.pathExists(base);
+      if (!exists) return;
+
+      const entries = await fs.readdir(base);
+      const now = Date.now();
+      const cutoff = days * 24 * 60 * 60 * 1000;
+
+      for (const e of entries) {
+        const full = path.join(base, e);
+        try {
+          const stat = await fs.stat(full);
+          // If it's a directory and old enough, remove
+          if (stat.isDirectory() && now - stat.mtimeMs > cutoff) {
+            await fs.remove(full);
+          }
+        } catch {
+          // ignore issues for individual entries
+        }
+      }
+    } catch (err) {
+      console.error('Video cleanup job error:', err);
+    }
+  });
+}
 ```
 
 ```javascript
@@ -1229,7 +1325,7 @@ export const Competency = model<ICompetency>('Competency', CompetencySchema);
 
 ```javascript
 // src/models/ExamSession.ts
-import { Schema, model,  } from 'mongoose';
+import { Schema, model } from 'mongoose';
 import type { Types, HydratedDocument } from 'mongoose';
 import type { Level } from './Question';
 
@@ -1248,12 +1344,7 @@ export interface ISessionAnswer {
   answeredAt?: Date;
   elapsedMs?: number;
 }
-export type ViolationType =
-  | 'TAB_BLUR'
-  | 'FULLSCREEN_EXIT'
-  | 'COPY'
-  | 'PASTE'
-  | 'RIGHT_CLICK';
+export type ViolationType = 'TAB_BLUR' | 'FULLSCREEN_EXIT' | 'COPY' | 'PASTE' | 'RIGHT_CLICK';
 export interface IViolationEvent {
   type: ViolationType;
   occurredAt: Date;
@@ -1265,20 +1356,28 @@ export interface IExamSession {
   step: 1 | 2 | 3;
   status: ExamStatus;
   timePerQuestionSec: number;
-  totalQuestions: number;        // 44
+  totalQuestions: number; // 44
   questions: ISessionQuestion[]; // frozen at start
-  answers: ISessionAnswer[];     // updated as user answers
+  answers: ISessionAnswer[]; // updated as user answers
   startAt: Date;
   endAt?: Date;
-  deadlineAt: Date;              // start + total * timePerQuestion
-  scorePct?: number;             // computed on submit
-  awardedLevel?: Level;          // A1..C2 per step thresholds
+  deadlineAt: Date; // start + total * timePerQuestion
+  scorePct?: number; // computed on submit
+  awardedLevel?: Level; // A1..C2 per step thresholds
   violations: IViolationEvent[];
   examClientInfo?: {
     ip?: string;
     userAgent?: string;
     screen?: { width: number; height: number };
     sebHeadersPresent?: boolean;
+  };
+  videoRecordingMeta?: {
+    dir: string;              // chunk directory
+    mime?: string | undefined;            // e.g., 'video/webm'
+    chunks?: number;          // highest index+1 we've seen (best-effort)
+    assembledPath?: string;   // final file path
+    sizeBytes?: number;       // final size (assembled)
+    completedAt?: Date;
   };
   createdAt: Date;
   updatedAt: Date;
@@ -1290,7 +1389,7 @@ const QuestionSub = new Schema<ISessionQuestion>(
   {
     questionId: { type: Schema.Types.ObjectId, ref: 'Question', required: true },
     competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true },
-    level: { type: String, enum: ['A1','A2','B1','B2','C1','C2'], required: true },
+    level: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'], required: true },
     order: { type: Number, required: true, min: 1, max: 200 },
   },
   { _id: false },
@@ -1311,7 +1410,7 @@ const ViolationSub = new Schema<IViolationEvent>(
   {
     type: {
       type: String,
-      enum: ['TAB_BLUR','FULLSCREEN_EXIT','COPY','PASTE','RIGHT_CLICK'],
+      enum: ['TAB_BLUR', 'FULLSCREEN_EXIT', 'COPY', 'PASTE', 'RIGHT_CLICK'],
       required: true,
     },
     occurredAt: { type: Date, required: true },
@@ -1323,8 +1422,13 @@ const ViolationSub = new Schema<IViolationEvent>(
 const ExamSessionSchema = new Schema<IExamSession>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, required: true },
-    step: { type: Number, enum: [1,2,3], index: true, required: true },
-    status: { type: String, enum: ['active','submitted','expired','abandoned'], index: true, default: 'active' },
+    step: { type: Number, enum: [1, 2, 3], index: true, required: true },
+    status: {
+      type: String,
+      enum: ['active', 'submitted', 'expired', 'abandoned'],
+      index: true,
+      default: 'active',
+    },
     timePerQuestionSec: { type: Number, required: true },
     totalQuestions: { type: Number, required: true },
     questions: { type: [QuestionSub], required: true },
@@ -1333,13 +1437,21 @@ const ExamSessionSchema = new Schema<IExamSession>(
     endAt: { type: Date },
     deadlineAt: { type: Date, required: true, index: true },
     scorePct: { type: Number },
-    awardedLevel: { type: String, enum: ['A1','A2','B1','B2','C1','C2'] },
+    awardedLevel: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'] },
     violations: { type: [ViolationSub], default: [] },
     examClientInfo: {
       ip: String,
       userAgent: String,
       screen: { width: Number, height: Number },
       sebHeadersPresent: Boolean,
+    },
+    videoRecordingMeta: {
+      dir: { type: String },
+      mime: { type: String },
+      chunks: { type: Number },
+      assembledPath: { type: String },
+      sizeBytes: { type: Number },
+      completedAt: { type: Date },
     },
   },
   { timestamps: true },
@@ -1470,6 +1582,40 @@ export const Question = model<QuestionRaw>('Question', QuestionSchema);
 
 ```javascript
 // src/models/RecordingAsset.ts
+import { Schema, model } from 'mongoose';
+import type { HydratedDocument, Types } from 'mongoose';
+
+export interface IRecordingAsset {
+  _id: Types.ObjectId | string;
+  sessionId: Types.ObjectId;
+  kind: 'video' | 'audio';
+  storagePath: string;     // absolute path (e.g., /tmp/testschool/videos/<session>/recording.webm)
+  sizeBytes: number;
+  durationSec?: number;
+  chunks?: number;
+  createdAt: Date;
+  completedAt?: Date;
+}
+
+export type RecordingAssetDoc = HydratedDocument<IRecordingAsset>;
+
+const RecordingAssetSchema = new Schema<IRecordingAsset>(
+  {
+    sessionId: { type: Schema.Types.ObjectId, ref: 'ExamSession', index: true, required: true },
+    kind: { type: String, enum: ['video', 'audio'], default: 'video' },
+    storagePath: { type: String, required: true },
+    sizeBytes: { type: Number, required: true },
+    durationSec: { type: Number },
+    chunks: { type: Number },
+    completedAt: { type: Date },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+RecordingAssetSchema.index({ sessionId: 1 });
+
+export const RecordingAsset = model<IRecordingAsset>('RecordingAsset', RecordingAssetSchema);
+
 ```
 
 ```javascript
@@ -1671,6 +1817,63 @@ export default router;
 
 ```javascript
 // src/routes/exam.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { requireSebHeaders } from '../middleware/seb.middleware';
+import {
+  StartExamQuery,
+  StartExamBody,
+  AnswerBody,
+  SubmitBody,
+  ViolationBody,
+  SessionIdParams,
+  UploadChunkQuery,
+} from '../validators/exam.validators';
+import {
+  startCtrl,
+  answerCtrl,
+  submitCtrl,
+  statusCtrl,
+  violationCtrl,
+} from '../controllers/exam.controller';
+
+import { chunkUploadMulter, uploadChunkCtrl } from '../controllers/video.controller';
+
+const router = Router();
+
+router.use(requireAuth);
+router.use(requireRole('student'));
+
+// Start (step comes in query). Enforce SEB guard here.
+router.post(
+  '/start',
+  requireSebHeaders,
+  validate({ query: StartExamQuery, body: StartExamBody }),
+  startCtrl,
+);
+
+// Answer within time window
+router.post('/answer', requireSebHeaders, validate(AnswerBody), answerCtrl);
+
+// Submit
+router.post('/submit', requireSebHeaders, validate(SubmitBody), submitCtrl);
+
+// Status
+router.get('/status/:sessionId', validate({ params: SessionIdParams }), statusCtrl);
+
+// Violations (allow even if SEB warn mode)
+router.post('/violation', validate(ViolationBody), violationCtrl);
+
+router.post(
+  '/video/upload-chunk',
+  validate({ query: UploadChunkQuery }),
+  chunkUploadMulter,
+  uploadChunkCtrl,
+);
+
+export default router;
 ```
 
 ```javascript
@@ -2269,19 +2472,20 @@ import crypto from 'node:crypto';
 import { Types } from 'mongoose';
 import { env } from '../config/env';
 import { AppError } from '../utils/error';
-import {type Level, Question } from '../models/Question';
+import { type Level, Question } from '../models/Question';
 import { ExamSession, type IViolationEvent } from '../models/ExamSession';
 import { User } from '../models/User';
 import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
+import { assembleChunks } from './video.service';
 
-function levelsForStep(step: 1|2|3) {
-  if (step === 1) return ['A1','A2'] as const;
-  if (step === 2) return ['B1','B2'] as const;
-  return ['C1','C2'] as const;
+function levelsForStep(step: 1 | 2 | 3) {
+  if (step === 1) return ['A1', 'A2'] as const;
+  if (step === 2) return ['B1', 'B2'] as const;
+  return ['C1', 'C2'] as const;
 }
 
-export async function ensureEligibility(userId: string, step: 1|2|3) {
+export async function ensureEligibility(userId: string, step: 1 | 2 | 3) {
   const user = await User.findById(userId).lean();
   if (!user) throw new AppError('UNAUTHORIZED', 'User not found', 401);
 
@@ -2292,8 +2496,11 @@ export async function ensureEligibility(userId: string, step: 1|2|3) {
 
   // Steps 2 & 3 require >=75% in previous step
   const prevStep = (step - 1) as 1 | 2;
-  const prev = await ExamSession
-    .findOne({ userId, step: prevStep, status: { $in: ['submitted','expired'] } })
+  const prev = await ExamSession.findOne({
+    userId,
+    step: prevStep,
+    status: { $in: ['submitted', 'expired'] },
+  })
     .sort({ createdAt: -1 })
     .lean();
 
@@ -2304,8 +2511,13 @@ export async function ensureEligibility(userId: string, step: 1|2|3) {
 
 export async function startExam(params: {
   userId: string;
-  step: 1|2|3;
-  client: { ip?: string; userAgent?: string; screen?: { width: number; height: number }; sebHeadersPresent?: boolean };
+  step: 1 | 2 | 3;
+  client: {
+    ip?: string;
+    userAgent?: string;
+    screen?: { width: number; height: number };
+    sebHeadersPresent?: boolean;
+  };
 }) {
   const { userId, step, client } = params;
   await ensureEligibility(userId, step);
@@ -2317,7 +2529,11 @@ export async function startExam(params: {
 
   if (questions.length !== 44) {
     // per spec: 22 competencies × 2 levels = 44
-    throw new AppError('CONFLICT', `Expected 44 questions for step ${step}, found ${questions.length}`, 409);
+    throw new AppError(
+      'CONFLICT',
+      `Expected 44 questions for step ${step}, found ${questions.length}`,
+      409,
+    );
   }
 
   // Shuffle to randomize order, but stable enough
@@ -2426,7 +2642,11 @@ export async function recordViolation(params: {
   await session.save();
   return { saved: true, violations: session.violations.length };
 }
-export async function submitExam(params: { userId: string; sessionId: string; reason?: 'auto' | 'user' }) {
+export async function submitExam(params: {
+  userId: string;
+  sessionId: string;
+  reason?: 'auto' | 'user';
+}) {
   const { userId, sessionId } = params;
   const session = await ExamSession.findOne({ _id: sessionId, userId });
   if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
@@ -2467,18 +2687,20 @@ export async function submitExam(params: { userId: string; sessionId: string; re
 
   await session.save();
 
-type AwardedOnly = { awardedLevel?: Level };
+  type AwardedOnly = { awardedLevel?: Level };
 
-const prior: AwardedOnly[] = await ExamSession
-  .find({ userId, status: { $in: ['submitted','expired'] } })
-  .select('awardedLevel')
-  .lean();
+  const prior: AwardedOnly[] = await ExamSession.find({
+    userId,
+    status: { $in: ['submitted', 'expired'] },
+  })
+    .select('awardedLevel')
+    .lean();
 
-let highest: Level | undefined = undefined;
-for (const s of prior) {
-  highest = maxLevel(highest, s.awardedLevel);
-}
-highest = maxLevel(highest, session.awardedLevel);
+  let highest: Level | undefined = undefined;
+  for (const s of prior) {
+    highest = maxLevel(highest, s.awardedLevel);
+  }
+  highest = maxLevel(highest, session.awardedLevel);
 
   if (highest) {
     const certificateId = crypto.randomUUID();
@@ -2488,6 +2710,13 @@ highest = maxLevel(highest, session.awardedLevel);
       { upsert: true },
     );
   }
+
+  try {
+  await assembleChunks({ sessionId });
+} catch (e) {
+  // Non-fatal: we don't want submission to fail because of video assembly
+  console.error('Video assembly failed for session', sessionId, e);
+}
 
   return {
     sessionId,
@@ -2517,6 +2746,7 @@ export async function getSessionStatus(params: { userId: string; sessionId: stri
     awardedLevel: session.awardedLevel,
   };
 }
+
 
 ```
 
@@ -2782,6 +3012,144 @@ export async function updatePassword(userId: string, passwordHash: string) {
 
 ```javascript
 // src/services/video.service.ts
+import path from 'node:path';
+import fs from 'fs-extra';
+import { Types } from 'mongoose';
+
+import { env } from '../config/env';
+import { AppError } from '../utils/error';
+import { ExamSession } from '../models/ExamSession';
+import { RecordingAsset } from '../models/RecordingAsset';
+
+function chunkDir(sessionId: string) {
+  return path.join(env.VIDEO_DIR, sessionId);
+}
+function chunkPath(sessionId: string, index: number) {
+  return path.join(chunkDir(sessionId), `chunk_${index}`);
+}
+function finalPath(sessionId: string, ext = '.webm') {
+  return path.join(env.VIDEO_DIR, sessionId, `recording${ext}`);
+}
+
+/** Ensure the current user owns the active session. Return session doc. */
+export async function mustGetActiveOwnedSession(userId: string, sessionId: string) {
+  const s = await ExamSession.findOne({ _id: sessionId, userId, status: 'active' });
+  if (!s) throw new AppError('FORBIDDEN', 'Session not found or not active', 403);
+  return s;
+}
+
+/** Save a raw chunk to disk atomically. */
+export async function saveChunk(params: {
+  userId: string;
+  sessionId: string;
+  index: number;
+  buffer: Buffer;
+  mime?: string; // e.g., video/webm
+}) {
+  const { userId, sessionId, index, buffer, mime } = params;
+
+  const session = await mustGetActiveOwnedSession(userId, sessionId);
+
+  const dir = chunkDir(sessionId);
+  await fs.ensureDir(dir);
+
+  const tmpFile = path.join(dir, `chunk_${index}.tmp`);
+  const file = chunkPath(sessionId, index);
+
+  await fs.writeFile(tmpFile, buffer);
+  await fs.move(tmpFile, file, { overwrite: true });
+console.log('Saved chunk ->', file);
+
+  // Track meta (best-effort; not required for correctness)
+  session.videoRecordingMeta = {
+    ...(session.videoRecordingMeta ?? {}),
+    dir,
+    mime: mime ?? session.videoRecordingMeta?.mime,
+    chunks: Math.max(session.videoRecordingMeta?.chunks ?? 0, index + 1),
+  };
+  await session.save();
+
+  return { stored: true, index, bytes: buffer.length };
+}
+
+type ChunkEntry = { n: string; i: number };
+/**
+ * Assemble all chunks into a single file (ordered by index).
+ * Makes a best-effort attempt and is safe to call multiple times.
+ */
+export async function assembleChunks(params: { sessionId: string; expectedExt?: string }) {
+  const { sessionId, expectedExt = '.webm' } = params;
+  const dir = chunkDir(sessionId);
+
+  const exists = await fs.pathExists(dir);
+  if (!exists) return { assembled: false, reason: 'no-chunks' };
+
+  const names = (await fs.readdir(dir)).filter((n: string) => n.startsWith('chunk_'));
+  if (names.length === 0) return { assembled: false, reason: 'no-chunks' };
+
+  // Sort by numeric index
+  const entries = names
+    .map((n: string) => ({ n, i: Number(n.replace('chunk_', '')) }))
+    .filter((e : { n: string; i: number }) => Number.isFinite(e.i))
+    .sort((a: ChunkEntry, b: ChunkEntry) => a.i - b.i);
+
+  const outPath = finalPath(sessionId, expectedExt);
+  const outTmp = `${outPath}.tmp`;
+
+  await fs.ensureFile(outTmp);
+  const out = fs.createWriteStream(outTmp);
+
+  for (const e of entries) {
+    const p = path.join(dir, e.n);
+    await new Promise<void>((resolve, reject) => {
+      const rs = fs.createReadStream(p);
+      rs.on('error', reject);
+      out.on('error', reject);
+      rs.on('end', resolve);
+      rs.pipe(out, { end: false });
+    });
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    out.on('error', reject);
+    out.end(resolve);
+  });
+
+  const size = (await fs.stat(outTmp)).size;
+  await fs.move(outTmp, outPath, { overwrite: true });
+
+  // Record an asset (upsert by session)
+  await RecordingAsset.updateOne(
+    { sessionId: new Types.ObjectId(sessionId) },
+    {
+      $set: {
+        kind: 'video',
+        storagePath: outPath,
+        sizeBytes: size,
+        chunks: entries.length,
+        completedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+
+  // Update session meta (best-effort)
+  await ExamSession.updateOne(
+    { _id: sessionId },
+    {
+      $set: {
+        'videoRecordingMeta.assembledPath': outPath,
+        'videoRecordingMeta.sizeBytes': size,
+        'videoRecordingMeta.completedAt': new Date(),
+      },
+      $setOnInsert: { 'videoRecordingMeta.dir': dir },
+    },
+  );
+
+  return { assembled: true, path: outPath, sizeBytes: size, chunks: entries.length };
+}
+
+
 ```
 
 ```javascript
@@ -3269,11 +3637,11 @@ export const ListCompetencyQuery = z.object({
 ```
 
 ```javascript
-// auth/validators/config.validators.ts
+// validators/config.validators.ts
 ```
 
 ```javascript
-// auth/validators/exam.validators.ts
+// validators/exam.validators.ts
 import { z } from 'zod';
 
 export const ObjectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
@@ -3306,6 +3674,11 @@ export const ViolationBody = z.object({
 
 export const SessionIdParams = z.object({
   sessionId: ObjectId,
+});
+
+export const UploadChunkQuery = z.object({
+  sessionId: ObjectId,
+  index: z.coerce.number().int().min(0),
 });
 ```
 

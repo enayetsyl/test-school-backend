@@ -8,6 +8,7 @@ import { ExamSession, type IViolationEvent } from '../models/ExamSession';
 import { User } from '../models/User';
 import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
+import { assembleChunks } from './video.service';
 
 function levelsForStep(step: 1 | 2 | 3) {
   if (step === 1) return ['A1', 'A2'] as const;
@@ -239,6 +240,13 @@ export async function submitExam(params: {
       { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } },
       { upsert: true },
     );
+  }
+
+  try {
+    await assembleChunks({ sessionId });
+  } catch (e) {
+    // Non-fatal: we don't want submission to fail because of video assembly
+    console.error('Video assembly failed for session', sessionId, e);
   }
 
   return {
