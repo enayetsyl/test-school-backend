@@ -9,6 +9,8 @@ import examRoutes from './exam.routes';
 import certificationRoutes from './certification.routes';
 import adminConfigRoutes from './config.routes';
 import adminSessionsRoutes from './admin.sessions.routes';
+import adminUsersRoutes from './admin.users.routes';
+import adminAuditRoutes from './admin.audit.routes';
 
 const router = Router();
 
@@ -22,5 +24,7 @@ router.use('/exam', examRoutes);
 router.use('/certifications', certificationRoutes);
 router.use('/admin/config', adminConfigRoutes);
 router.use('/admin/sessions', adminSessionsRoutes);
+router.use('/admin/users', adminUsersRoutes);
+router.use('/admin/audit-logs', adminAuditRoutes);
 
 export default router;
