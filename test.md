@@ -534,6 +534,97 @@ export const deleteCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res
 
 ```javascript
 // src/controllers/exam.controller.ts
+import type { RequestHandler } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { sendOk, sendCreated } from '../utils/respond';
+import {
+  startExam,
+  answerQuestion,
+  submitExam,
+  getSessionStatus,
+  recordViolation,
+} from '../services/exam.service';
+import { type ViolationType } from '../models/ExamSession';
+
+export const startCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+  const step = Number(req.query.step) as 1|2|3;
+   const client: {
+    ip?: string;
+    userAgent?: string;
+    screen?: { width: number; height: number };
+    sebHeadersPresent?: boolean;
+  } = {
+    ...(req.ip ? { ip: req.ip } : {}),
+    ...(req.get('user-agent') ? { userAgent: req.get('user-agent')! } : {}),
+    ...(req.body?.screen ? { screen: req.body.screen } : {}),
+    ...(
+      req.headers['x-safe-exam-browser-configkeyhash'] ||
+      req.headers['x-safe-exam-browser-requesthash']
+        ? { sebHeadersPresent: true }
+        : {}
+    ),
+  };
+  const out = await startExam({ userId, step, client });
+  return sendCreated(res, out, 'Exam started');
+});
+
+export const answerCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+  const { sessionId, questionId, selectedIndex, elapsedMs } = req.body as {
+    sessionId: string; questionId: string; selectedIndex: number; elapsedMs?: number;
+  };
+
+   const payload: {
+    userId: string;
+    sessionId: string;
+    questionId: string;
+    selectedIndex: number;
+    elapsedMs?: number;
+  } = {
+    userId,
+    sessionId,
+    questionId,
+    selectedIndex,
+    ...(elapsedMs !== undefined ? { elapsedMs } : {}),
+  };
+
+  const out = await answerQuestion(payload);
+  return sendOk(res, out, 'Answer saved');
+});
+
+export const submitCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+  const { sessionId } = req.body as { sessionId: string };
+  const out = await submitExam({ userId, sessionId, reason: 'user' });
+  return sendOk(res, out, 'Exam submitted');
+});
+
+export const statusCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+  const { sessionId } = req.params as { sessionId: string };
+  const out = await getSessionStatus({ userId, sessionId });
+  return sendOk(res, out, 'Status');
+});
+
+export const violationCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+
+  const { sessionId, type, meta } = req.body as {
+    sessionId: string;
+    type: ViolationType;                     // <-- use the union type
+    meta?: Record<string, unknown>;
+  };
+
+ const out = await recordViolation({
+    userId,
+    sessionId,
+    type,
+    ...(meta ? { meta } : {}),
+  });
+  return sendOk(res, out, 'Violation recorded');
+});
+
 ```
 
 ```javascript
@@ -723,6 +814,27 @@ export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
 
 ```javascript
 // src/jobs/autoSubmitExpiredExams.job.ts
+import cron from 'node-cron';
+import { ExamSession } from '../models/ExamSession';
+import { submitExam } from '../services/exam.service';
+
+/** Runs every minute: auto-finalize expired "active" sessions. */
+export function scheduleAutoSubmitExpiredExamsJob() {
+  cron.schedule('*/1 * * * *', async () => {
+    const now = new Date();
+    const expired = await ExamSession.find({ status: 'active', deadlineAt: { $lt: now } }).select(
+      '_id userId',
+    );
+    for (const s of expired) {
+      try {
+        await submitExam({ userId: String(s.userId), sessionId: String(s._id), reason: 'auto' });
+      } catch (e) {
+        // keep silent, next tick will retry new ones
+        console.error('Auto-submit failed for session', String(s._id), e);
+      }
+    }
+  });
+}
 ```
 
 ```javascript
@@ -869,6 +981,31 @@ export function respondMiddleware(_req: Request, res: Response, next: NextFuncti
 
 ```javascript
 // src/middleware/seb.middleware.ts
+import type { Request, Response, NextFunction } from 'express';
+import { env } from '../config/env';
+import { AppError } from '../utils/error';
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    sebHeadersPresent?: boolean;
+  }
+}
+
+/** Minimal SEB guard: in `block` mode, required headers must be present; in `warn`, we allow through. */
+export function requireSebHeaders(req: Request, _res: Response, next: NextFunction) {
+  const cfg = env.SEB_MODE; // 'block' | 'warn'
+  const present = Boolean(
+    req.headers['x-safe-exam-browser-configkeyhash'] ||
+    req.headers['x-safe-exam-browser-requesthash'],
+  );
+  req.sebHeadersPresent = present;
+
+  if (cfg === 'block' && !present) {
+    throw new AppError('FORBIDDEN', 'Safe Exam Browser required', 403);
+  }
+  return next();
+}
+
 ```
 
 ```javascript
@@ -1026,6 +1163,35 @@ export const AuditLog = model<IAuditLog>('AuditLog', AuditLogSchema);
 
 ```javascript
 // src/models/Certification.ts
+import { Schema, model,  } from 'mongoose';
+import type { HydratedDocument, Types } from 'mongoose';
+import type { Level } from './Question';
+
+export interface ICertification {
+  _id: Types.ObjectId | string;
+  userId: Types.ObjectId;
+  highestLevel: Level;
+  issuedAt: Date;
+  certificateId: string; // UUID-ish for public verification
+  pdfUrl?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+export type CertificationDoc = HydratedDocument<ICertification>;
+
+const CertificationSchema = new Schema<ICertification>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true, unique: true },
+    highestLevel: { type: String, enum: ['A1','A2','B1','B2','C1','C2'], required: true },
+    issuedAt: { type: Date, required: true },
+    certificateId: { type: String, required: true, index: true, unique: true },
+    pdfUrl: { type: String },
+  },
+  { timestamps: true },
+);
+
+export const Certification = model<ICertification>('Certification', CertificationSchema);
+
 ```
 
 ```javascript
@@ -1063,6 +1229,127 @@ export const Competency = model<ICompetency>('Competency', CompetencySchema);
 
 ```javascript
 // src/models/ExamSession.ts
+import { Schema, model,  } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+import type { Level } from './Question';
+
+export type ExamStatus = 'active' | 'submitted' | 'expired' | 'abandoned';
+
+export interface ISessionQuestion {
+  questionId: Types.ObjectId;
+  competencyId: Types.ObjectId;
+  level: Level;
+  order: number; // 1..44
+}
+export interface ISessionAnswer {
+  questionId: Types.ObjectId;
+  selectedIndex?: number;
+  isCorrect?: boolean;
+  answeredAt?: Date;
+  elapsedMs?: number;
+}
+export type ViolationType =
+  | 'TAB_BLUR'
+  | 'FULLSCREEN_EXIT'
+  | 'COPY'
+  | 'PASTE'
+  | 'RIGHT_CLICK';
+export interface IViolationEvent {
+  type: ViolationType;
+  occurredAt: Date;
+  meta?: Record<string, unknown>;
+}
+export interface IExamSession {
+  _id: Types.ObjectId | string;
+  userId: Types.ObjectId;
+  step: 1 | 2 | 3;
+  status: ExamStatus;
+  timePerQuestionSec: number;
+  totalQuestions: number;        // 44
+  questions: ISessionQuestion[]; // frozen at start
+  answers: ISessionAnswer[];     // updated as user answers
+  startAt: Date;
+  endAt?: Date;
+  deadlineAt: Date;              // start + total * timePerQuestion
+  scorePct?: number;             // computed on submit
+  awardedLevel?: Level;          // A1..C2 per step thresholds
+  violations: IViolationEvent[];
+  examClientInfo?: {
+    ip?: string;
+    userAgent?: string;
+    screen?: { width: number; height: number };
+    sebHeadersPresent?: boolean;
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type ExamSessionDoc = HydratedDocument<IExamSession>;
+
+const QuestionSub = new Schema<ISessionQuestion>(
+  {
+    questionId: { type: Schema.Types.ObjectId, ref: 'Question', required: true },
+    competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true },
+    level: { type: String, enum: ['A1','A2','B1','B2','C1','C2'], required: true },
+    order: { type: Number, required: true, min: 1, max: 200 },
+  },
+  { _id: false },
+);
+
+const AnswerSub = new Schema<ISessionAnswer>(
+  {
+    questionId: { type: Schema.Types.ObjectId, ref: 'Question', required: true },
+    selectedIndex: { type: Number },
+    isCorrect: { type: Boolean },
+    answeredAt: { type: Date },
+    elapsedMs: { type: Number },
+  },
+  { _id: false },
+);
+
+const ViolationSub = new Schema<IViolationEvent>(
+  {
+    type: {
+      type: String,
+      enum: ['TAB_BLUR','FULLSCREEN_EXIT','COPY','PASTE','RIGHT_CLICK'],
+      required: true,
+    },
+    occurredAt: { type: Date, required: true },
+    meta: { type: Schema.Types.Mixed },
+  },
+  { _id: false },
+);
+
+const ExamSessionSchema = new Schema<IExamSession>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, required: true },
+    step: { type: Number, enum: [1,2,3], index: true, required: true },
+    status: { type: String, enum: ['active','submitted','expired','abandoned'], index: true, default: 'active' },
+    timePerQuestionSec: { type: Number, required: true },
+    totalQuestions: { type: Number, required: true },
+    questions: { type: [QuestionSub], required: true },
+    answers: { type: [AnswerSub], required: true, default: [] },
+    startAt: { type: Date, required: true },
+    endAt: { type: Date },
+    deadlineAt: { type: Date, required: true, index: true },
+    scorePct: { type: Number },
+    awardedLevel: { type: String, enum: ['A1','A2','B1','B2','C1','C2'] },
+    violations: { type: [ViolationSub], default: [] },
+    examClientInfo: {
+      ip: String,
+      userAgent: String,
+      screen: { width: Number, height: Number },
+      sebHeadersPresent: Boolean,
+    },
+  },
+  { timestamps: true },
+);
+
+ExamSessionSchema.index({ userId: 1, step: 1, status: 1 });
+ExamSessionSchema.index({ 'questions.questionId': 1 }, { sparse: true });
+
+export const ExamSession = model<IExamSession>('ExamSession', ExamSessionSchema);
+
 ```
 
 ```javascript
@@ -1394,6 +1681,7 @@ import authRoutes from './auth.routes';
 import userRoutes from './user.routes';
 import competencyRoutes from './competency.routes';
 import questionRoutes from './question.routes';
+import examRoutes from './exam.routes';
 
 const router = Router();
 
@@ -1403,6 +1691,7 @@ router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/competencies', competencyRoutes);
 router.use('/questions', questionRoutes);
+router.use('/exam', examRoutes);
 
 export default router;
 ```
@@ -1976,6 +2265,259 @@ export async function deleteCompetency(id: string) {
 
 ```javascript
 // src/services/exam.service.ts
+import crypto from 'node:crypto';
+import { Types } from 'mongoose';
+import { env } from '../config/env';
+import { AppError } from '../utils/error';
+import {type Level, Question } from '../models/Question';
+import { ExamSession, type IViolationEvent } from '../models/ExamSession';
+import { User } from '../models/User';
+import { Certification } from '../models/Certification';
+import { mapScoreToLevel, maxLevel } from './scoring.service';
+
+function levelsForStep(step: 1|2|3) {
+  if (step === 1) return ['A1','A2'] as const;
+  if (step === 2) return ['B1','B2'] as const;
+  return ['C1','C2'] as const;
+}
+
+export async function ensureEligibility(userId: string, step: 1|2|3) {
+  const user = await User.findById(userId).lean();
+  if (!user) throw new AppError('UNAUTHORIZED', 'User not found', 401);
+
+  if (step === 1) {
+    if (user.isLockedFromStep1) throw new AppError('FORBIDDEN', 'Locked from retaking Step 1', 403);
+    return;
+  }
+
+  // Steps 2 & 3 require >=75% in previous step
+  const prevStep = (step - 1) as 1 | 2;
+  const prev = await ExamSession
+    .findOne({ userId, step: prevStep, status: { $in: ['submitted','expired'] } })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  if (!prev || (prev.scorePct ?? 0) < 75) {
+    throw new AppError('FORBIDDEN', `Not eligible for Step ${step}`, 403);
+  }
+}
+
+export async function startExam(params: {
+  userId: string;
+  step: 1|2|3;
+  client: { ip?: string; userAgent?: string; screen?: { width: number; height: number }; sebHeadersPresent?: boolean };
+}) {
+  const { userId, step, client } = params;
+  await ensureEligibility(userId, step);
+
+  const [l1, l2] = levelsForStep(step);
+  const questions = await Question.find({ level: { $in: [l1, l2] }, isActive: true })
+    .select('_id competencyId level')
+    .lean();
+
+  if (questions.length !== 44) {
+    // per spec: 22 competencies × 2 levels = 44
+    throw new AppError('CONFLICT', `Expected 44 questions for step ${step}, found ${questions.length}`, 409);
+  }
+
+  // Shuffle to randomize order, but stable enough
+  const shuffled = [...questions].sort(() => (crypto.randomInt(0, 2) ? 1 : -1));
+
+  const timePerQuestionSec = env.TIME_PER_QUESTION_SECONDS;
+  const totalQuestions = shuffled.length;
+  const startAt = new Date();
+  const deadlineAt = new Date(startAt.getTime() + totalQuestions * timePerQuestionSec * 1000);
+
+  const session = await ExamSession.create({
+    userId: new Types.ObjectId(userId),
+    step,
+    status: 'active',
+    timePerQuestionSec,
+    totalQuestions,
+    questions: shuffled.map((q, i) => ({
+      questionId: q._id,
+      competencyId: q.competencyId,
+      level: q.level,
+      order: i + 1,
+    })),
+    answers: shuffled.map((q) => ({ questionId: q._id })),
+    startAt,
+    deadlineAt,
+    violations: [],
+    examClientInfo: {
+      ip: client.ip,
+      userAgent: client.userAgent,
+      screen: client.screen,
+      sebHeadersPresent: client.sebHeadersPresent ?? false,
+    },
+  });
+
+  // Return without correct answers
+  return {
+    sessionId: String(session._id),
+    step,
+    timePerQuestionSec,
+    totalQuestions,
+    deadlineAt,
+    questions: session.questions.map((sq) => ({
+      questionId: String(sq.questionId),
+      competencyId: String(sq.competencyId),
+      level: sq.level,
+      order: sq.order,
+    })),
+  };
+}
+
+export async function answerQuestion(params: {
+  userId: string;
+  sessionId: string;
+  questionId: string;
+  selectedIndex: number;
+  elapsedMs?: number;
+}) {
+  const { userId, sessionId, questionId, selectedIndex, elapsedMs } = params;
+
+  const session = await ExamSession.findOne({ _id: sessionId, userId });
+  if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
+  if (session.status !== 'active') throw new AppError('FORBIDDEN', 'Session not active', 403);
+
+  const now = new Date();
+  if (now > session.deadlineAt) {
+    session.status = 'expired';
+    session.endAt = now;
+    await session.save();
+    throw new AppError('FORBIDDEN', 'Session time elapsed', 403);
+  }
+
+  // Validate index against actual question options length
+  const q = await Question.findById(questionId).select('options').lean();
+  if (!q) throw new AppError('NOT_FOUND', 'Question not found', 404);
+  if (selectedIndex < 0 || selectedIndex >= (q.options?.length ?? 0)) {
+    throw new AppError('VALIDATION_ERROR', 'selectedIndex out of bounds', 400);
+  }
+
+  const ans = session.answers.find((a) => String(a.questionId) === String(questionId));
+  if (!ans) throw new AppError('VALIDATION_ERROR', 'Question not in session', 400);
+
+  ans.selectedIndex = selectedIndex;
+  ans.answeredAt = now;
+  if (typeof elapsedMs === 'number') ans.elapsedMs = elapsedMs;
+
+  await session.save();
+
+  return { saved: true };
+}
+
+export async function recordViolation(params: {
+  userId: string;
+  sessionId: string;
+  type: 'TAB_BLUR' | 'FULLSCREEN_EXIT' | 'COPY' | 'PASTE' | 'RIGHT_CLICK';
+  meta?: Record<string, unknown>;
+}) {
+  const { userId, sessionId, type, meta } = params;
+  const session = await ExamSession.findOne({ _id: sessionId, userId });
+  if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
+  if (session.status !== 'active') return { saved: false };
+
+  const v: IViolationEvent = { type, occurredAt: new Date() };
+  if (meta !== undefined) v.meta = meta; // only set when present
+
+  session.violations.push(v);
+  await session.save();
+  return { saved: true, violations: session.violations.length };
+}
+export async function submitExam(params: { userId: string; sessionId: string; reason?: 'auto' | 'user' }) {
+  const { userId, sessionId } = params;
+  const session = await ExamSession.findOne({ _id: sessionId, userId });
+  if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
+  if (session.status !== 'active') {
+    return { already: true, sessionId };
+  }
+
+  const now = new Date();
+  const expired = now > session.deadlineAt;
+  session.status = expired ? 'expired' : 'submitted';
+  session.endAt = now;
+
+  // Score
+  const ids = session.questions.map((q) => q.questionId);
+  const bank = await Question.find({ _id: { $in: ids } }, { _id: 1, correctIndex: 1 }).lean();
+  const correctById = new Map(bank.map((b) => [String(b._id), b.correctIndex]));
+
+  let correct = 0;
+  for (const a of session.answers) {
+    const ci = correctById.get(String(a.questionId));
+    if (ci !== undefined && a.selectedIndex !== undefined) {
+      a.isCorrect = a.selectedIndex === ci;
+      if (a.isCorrect) correct += 1;
+    } else {
+      a.isCorrect = false;
+    }
+  }
+  const scorePct = Math.round((correct / session.totalQuestions) * 10000) / 100; // 2 decimals
+  session.scorePct = scorePct;
+
+  const { level, proceedNext } = mapScoreToLevel(session.step, scorePct); // per spec thresholds
+  if (level) session.awardedLevel = level;
+
+  // Step 1 <25% locks retake
+  if (session.step === 1 && scorePct < 25) {
+    await User.updateOne({ _id: userId }, { $set: { isLockedFromStep1: true } });
+  }
+
+  await session.save();
+
+type AwardedOnly = { awardedLevel?: Level };
+
+const prior: AwardedOnly[] = await ExamSession
+  .find({ userId, status: { $in: ['submitted','expired'] } })
+  .select('awardedLevel')
+  .lean();
+
+let highest: Level | undefined = undefined;
+for (const s of prior) {
+  highest = maxLevel(highest, s.awardedLevel);
+}
+highest = maxLevel(highest, session.awardedLevel);
+
+  if (highest) {
+    const certificateId = crypto.randomUUID();
+    await Certification.updateOne(
+      { userId },
+      { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } },
+      { upsert: true },
+    );
+  }
+
+  return {
+    sessionId,
+    status: session.status,
+    scorePct,
+    awardedLevel: session.awardedLevel,
+    proceedNext: !!proceedNext,
+  };
+}
+
+export async function getSessionStatus(params: { userId: string; sessionId: string }) {
+  const { userId, sessionId } = params;
+  const session = await ExamSession.findOne({ _id: sessionId, userId }).lean();
+  if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
+
+  const now = Date.now();
+  const leftMs = Math.max(0, new Date(session.deadlineAt).getTime() - now);
+  const answered = session.answers.filter((a) => a.selectedIndex !== undefined).length;
+
+  return {
+    sessionId: String(session._id),
+    status: session.status,
+    timeLeftSec: Math.floor(leftMs / 1000),
+    answeredCount: answered,
+    totalQuestions: session.totalQuestions,
+    scorePct: session.scorePct,
+    awardedLevel: session.awardedLevel,
+  };
+}
+
 ```
 
 ```javascript
@@ -2182,6 +2724,37 @@ const filter: RootFilterQuery<QuestionRaw> = { competencyId, level: r.level };
 
 ```javascript
 // src/services/scoring.service.ts
+import type { Level } from '../models/Question';
+
+/** Map percentage → awarded level for a given step (per spec). */
+export function mapScoreToLevel(step: 1|2|3, scorePct: number): { level?: Level; proceedNext?: boolean } {
+  const s = scorePct;
+  if (step === 1) {
+    if (s < 25) return {  proceedNext: false };          // fail + lock
+    if (s < 50) return { level: 'A1', proceedNext: false };
+    if (s < 75) return { level: 'A2', proceedNext: false };
+    return { level: 'A2', proceedNext: true };
+  }
+  if (step === 2) {
+    if (s < 25) return { level: 'A2', proceedNext: false };
+    if (s < 50) return { level: 'B1', proceedNext: false };
+    if (s < 75) return { level: 'B2', proceedNext: false };
+    return { level: 'B2', proceedNext: true };
+  }
+  // step 3
+  if (s < 25) return { level: 'B2', proceedNext: false };
+  if (s < 50) return { level: 'C1', proceedNext: false };
+  return { level: 'C2', proceedNext: false };
+}
+
+/** Compare two levels and return the higher one. */
+export function maxLevel(a?: Level, b?: Level): Level | undefined {
+  const order: Level[] = ['A1','A2','B1','B2','C1','C2'];
+  if (!a) return b;
+  if (!b) return a;
+  return order.indexOf(a) >= order.indexOf(b) ? a : b;
+}
+
 ```
 
 ```javascript
@@ -2701,6 +3274,39 @@ export const ListCompetencyQuery = z.object({
 
 ```javascript
 // auth/validators/exam.validators.ts
+import { z } from 'zod';
+
+export const ObjectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+
+export const StartExamQuery = z.object({
+  step: z.coerce.number().int().min(1).max(3),
+});
+export const StartExamBody = z.object({
+  screen: z
+    .object({ width: z.number().int().positive(), height: z.number().int().positive() })
+    .optional(),
+});
+
+export const AnswerBody = z.object({
+  sessionId: ObjectId,
+  questionId: ObjectId,
+  selectedIndex: z.number().int().min(0),
+  elapsedMs: z.number().int().min(0).optional(),
+});
+
+export const SubmitBody = z.object({
+  sessionId: ObjectId,
+});
+
+export const ViolationBody = z.object({
+  sessionId: ObjectId,
+  type: z.enum(['TAB_BLUR', 'FULLSCREEN_EXIT', 'COPY', 'PASTE', 'RIGHT_CLICK']),
+  meta: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const SessionIdParams = z.object({
+  sessionId: ObjectId,
+});
 ```
 
 ```javascript
