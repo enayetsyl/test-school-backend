@@ -8,6 +8,7 @@ import { ExamSession } from '../models/ExamSession';
 import { User } from '../models/User';
 import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
+import { assembleChunks } from './video.service';
 function levelsForStep(step) {
     if (step === 1)
         return ['A1', 'A2'];
@@ -189,6 +190,13 @@ export async function submitExam(params) {
     if (highest) {
         const certificateId = crypto.randomUUID();
         await Certification.updateOne({ userId }, { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } }, { upsert: true });
+    }
+    try {
+        await assembleChunks({ sessionId });
+    }
+    catch (e) {
+        // Non-fatal: we don't want submission to fail because of video assembly
+        console.error('Video assembly failed for session', sessionId, e);
     }
     return {
         sessionId,
