@@ -247,26 +247,19 @@ SEED_ADMIN_PASS=Ab123456@
 ```javascript
 // src/server.ts
 import http from 'http';
-
-import { Server as SocketIOServer } from 'socket.io';
-
 import app from './app';
 import { connectDB } from './config/db';
 import { env } from './config/env';
+import { scheduleAutoSubmitExpiredExamsJob } from './jobs/autoSubmitExpiredExams.job';
+import { scheduleCleanupOldVideosJob } from './jobs/cleanupOldVideos.job';
+import { initSocket } from './config/socket';
 
 const server = http.createServer(app);
-const io = new SocketIOServer(server, {
-  cors: { origin: process.env.CLIENT_URL, credentials: true },
-});
+initSocket(server);
 
 connectDB();
 scheduleAutoSubmitExpiredExamsJob();
 scheduleCleanupOldVideosJob(2);
-
-// Socket events setup can go here or in src/config/socket.ts
-io.on('connection', (socket) => {
-  console.log(`Socket connected: ${socket.id}`);
-});
 
 server.listen(env.PORT, () => {
   console.log(`Server running on env. ${env.PORT}`);
@@ -396,6 +389,46 @@ export const isProd = env.NODE_ENV === 'production';
 
 ```javascript
 // src/config/socket.ts
+import type http from 'node:http';
+import { Server as SocketIOServer, type Socket } from 'socket.io';
+import { env } from './env';
+import { verifyAccessToken, type AccessTokenPayload } from '../utils/jwt';
+import { registerExamSocketHandlers } from '../sockets/exam.socket';
+
+let io: SocketIOServer | undefined;
+
+export function initSocket(server: http.Server) {
+  io = new SocketIOServer(server, {
+    cors: { origin: env.CLIENT_URL, credentials: true },
+  });
+
+  // Lightweight auth middleware
+  io.use((socket: Socket, next) => {
+    try {
+      const header = socket.handshake.headers.authorization ?? '';
+      const bearer = (Array.isArray(header) ? header[0] : header) || '';
+      const token = (socket.handshake.auth?.token as string) ||
+                    (socket.handshake.query?.token as string) ||
+                    bearer.split(' ')[1];
+
+      if (!token) return next(new Error('Missing token'));
+      const payload = verifyAccessToken(token);
+      (socket.data as { user: AccessTokenPayload }).user = payload;
+      return next();
+    } catch {
+      return next(new Error('Unauthorized'));
+    }
+  });
+
+  registerExamSocketHandlers(io);
+  return io;
+}
+
+export function getIO(): SocketIOServer {
+  if (!io) throw new Error('Socket.io not initialized');
+  return io;
+}
+
 ```
 
 ```javascript
@@ -483,6 +516,46 @@ export function publicUser(u: UserDoc) {
 
 ```javascript
 // src/controllers/certification.controller.ts
+import type { RequestHandler } from 'express';
+import path from 'node:path';
+import fs from 'fs-extra';
+import { asyncHandler } from '../utils/asyncHandler';
+import { getMyCertification, getCertificationById, verifyByPublicId, ensurePdfForCertificate } from '../services/certification.service';
+import { AppError } from '../utils/error';
+
+export const meCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const cert = await getMyCertification(req.user!.sub);
+  return cert ? res.ok({ certification: cert }) : res.ok({ certification: null });
+});
+
+export const getByIdCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const cert = await getCertificationById(req.params.id as string);
+  if (!cert) throw new AppError('NOT_FOUND', 'Certificate not found', 404);
+  return res.ok({ certification: cert });
+});
+
+export const verifyCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const out = await verifyByPublicId(req.params.certificateId as string);
+  return res.ok(out, 'Verified');
+});
+
+export const pdfCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const cert = await getCertificationById(req.params.id as string);
+  if (!cert) throw new AppError('NOT_FOUND', 'Certificate not found', 404);
+
+  // Owner or admin can download
+  const isOwner = String(cert.userId) === req.user!.sub;
+  const isAdmin = req.user!.role === 'admin';
+  if (!isOwner && !isAdmin) throw new AppError('FORBIDDEN', 'Not allowed', 403);
+
+  const ensured = await ensurePdfForCertificate(String(cert._id));
+  const file = ensured.pdfUrl!;
+  const exists = await fs.pathExists(file);
+  if (!exists) throw new AppError('SERVER_ERROR', 'PDF missing', 500);
+
+  return res.download(file, path.basename(file));
+});
+
 ```
 
 ```javascript
@@ -559,11 +632,12 @@ import {
   recordViolation,
 } from '../services/exam.service';
 import { type ViolationType } from '../models/ExamSession';
+import { emitSessionStart, emitSessionAnswer, emitSessionViolation, emitSessionSubmit } from '../sockets/exam.socket';
 
 export const startCtrl: RequestHandler = asyncHandler(async (req, res) => {
   const userId = req.user!.sub;
-  const step = Number(req.query.step) as 1|2|3;
-   const client: {
+  const step = Number(req.query.step) as 1 | 2 | 3;
+  const client: {
     ip?: string;
     userAgent?: string;
     screen?: { width: number; height: number };
@@ -572,24 +646,33 @@ export const startCtrl: RequestHandler = asyncHandler(async (req, res) => {
     ...(req.ip ? { ip: req.ip } : {}),
     ...(req.get('user-agent') ? { userAgent: req.get('user-agent')! } : {}),
     ...(req.body?.screen ? { screen: req.body.screen } : {}),
-    ...(
-      req.headers['x-safe-exam-browser-configkeyhash'] ||
-      req.headers['x-safe-exam-browser-requesthash']
-        ? { sebHeadersPresent: true }
-        : {}
-    ),
+    ...(req.headers['x-safe-exam-browser-configkeyhash'] ||
+    req.headers['x-safe-exam-browser-requesthash']
+      ? { sebHeadersPresent: true }
+      : {}),
   };
   const out = await startExam({ userId, step, client });
+
+  emitSessionStart(out.sessionId, {
+  userId,
+  step,
+  deadlineAt: out.deadlineAt.toISOString?.() ?? String(out.deadlineAt),
+  totalQuestions: out.totalQuestions,
+});
+
   return sendCreated(res, out, 'Exam started');
 });
 
 export const answerCtrl: RequestHandler = asyncHandler(async (req, res) => {
   const userId = req.user!.sub;
   const { sessionId, questionId, selectedIndex, elapsedMs } = req.body as {
-    sessionId: string; questionId: string; selectedIndex: number; elapsedMs?: number;
+    sessionId: string;
+    questionId: string;
+    selectedIndex: number;
+    elapsedMs?: number;
   };
 
-   const payload: {
+  const payload: {
     userId: string;
     sessionId: string;
     questionId: string;
@@ -604,6 +687,15 @@ export const answerCtrl: RequestHandler = asyncHandler(async (req, res) => {
   };
 
   const out = await answerQuestion(payload);
+
+  const answeredAt = new Date().toISOString();
+
+  emitSessionAnswer(req.body.sessionId, {
+  questionId: req.body.questionId,
+  selectedIndex: req.body.selectedIndex,
+  answeredAt,
+});
+
   return sendOk(res, out, 'Answer saved');
 });
 
@@ -611,6 +703,14 @@ export const submitCtrl: RequestHandler = asyncHandler(async (req, res) => {
   const userId = req.user!.sub;
   const { sessionId } = req.body as { sessionId: string };
   const out = await submitExam({ userId, sessionId, reason: 'user' });
+
+emitSessionSubmit(req.body.sessionId, {
+  status: out.status,
+  scorePct: out.scorePct,
+  ...(out.awardedLevel ? { awardedLevel: out.awardedLevel } : {}),
+  proceedNext: out.proceedNext,
+});
+
   return sendOk(res, out, 'Exam submitted');
 });
 
@@ -626,18 +726,22 @@ export const violationCtrl: RequestHandler = asyncHandler(async (req, res) => {
 
   const { sessionId, type, meta } = req.body as {
     sessionId: string;
-    type: ViolationType;                     // <-- use the union type
+    type: ViolationType; // <-- use the union type
     meta?: Record<string, unknown>;
   };
 
- const out = await recordViolation({
+  const out = await recordViolation({
     userId,
     sessionId,
     type,
     ...(meta ? { meta } : {}),
   });
+
+  emitSessionViolation(sessionId, { type, occurredAt: new Date().toISOString() });
+
   return sendOk(res, out, 'Violation recorded');
 });
+
 
 ```
 
@@ -1259,7 +1363,7 @@ export const AuditLog = model<IAuditLog>('AuditLog', AuditLogSchema);
 
 ```javascript
 // src/models/Certification.ts
-import { Schema, model,  } from 'mongoose';
+import { Schema, model } from 'mongoose';
 import type { HydratedDocument, Types } from 'mongoose';
 import type { Level } from './Question';
 
@@ -1269,7 +1373,7 @@ export interface ICertification {
   highestLevel: Level;
   issuedAt: Date;
   certificateId: string; // UUID-ish for public verification
-  pdfUrl?: string;
+  pdfUrl?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -1278,10 +1382,10 @@ export type CertificationDoc = HydratedDocument<ICertification>;
 const CertificationSchema = new Schema<ICertification>(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true, unique: true },
-    highestLevel: { type: String, enum: ['A1','A2','B1','B2','C1','C2'], required: true },
+    highestLevel: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'], required: true },
     issuedAt: { type: Date, required: true },
     certificateId: { type: String, required: true, index: true, unique: true },
-    pdfUrl: { type: String },
+     pdfUrl: { type: String, default: null },
   },
   { timestamps: true },
 );
@@ -1748,6 +1852,36 @@ export default router;
 
 ```javascript
 // src/routes/certification.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { meCtrl, getByIdCtrl, verifyCtrl, pdfCtrl } from '../controllers/certification.controller';
+import { CertIdParams, VerifyPublicIdParams } from '../validators/certification.validators';
+
+const router = Router();
+
+// Public verify by certificateId
+router.get('/verify/:certificateId', validate({ params: VerifyPublicIdParams }), verifyCtrl);
+
+// Authenticated
+router.use(requireAuth);
+
+// Student: my cert
+router.get('/me', requireRole('student'), meCtrl);
+
+// Admin/Supervisor: read by _id
+router.get(
+  '/:id',
+  requireRole('admin', 'supervisor'),
+  validate({ params: CertIdParams }),
+  getByIdCtrl,
+);
+
+// Admin or owner: download PDF
+router.get('/:id/pdf', validate({ params: CertIdParams }), pdfCtrl);
+
+export default router;
 ```
 
 ```javascript
@@ -1885,6 +2019,7 @@ import userRoutes from './user.routes';
 import competencyRoutes from './competency.routes';
 import questionRoutes from './question.routes';
 import examRoutes from './exam.routes';
+import certificationRoutes from './certification.routes';
 
 const router = Router();
 
@@ -1895,6 +2030,7 @@ router.use('/users', userRoutes);
 router.use('/competencies', competencyRoutes);
 router.use('/questions', questionRoutes);
 router.use('/exam', examRoutes);
+router.use('/certifications', certificationRoutes);
 
 export default router;
 ```
@@ -2386,6 +2522,104 @@ function parseExpiryMs(v: string | number): number {
 
 ```javascript
 // src/services/certification.service.ts
+import path from 'node:path';
+import fs from 'fs-extra';
+import crypto from 'node:crypto';
+import { Types } from 'mongoose';
+
+import { Certification, type CertificationDoc } from '../models/Certification';
+import { User } from '../models/User';
+import type { Level } from '../models/Question';
+import { env } from '../config/env';
+import { AppError } from '../utils/error';
+import { generateCertificatePDF } from '../utils/pdf';
+
+/** Return the single (highest) certification for a user, if present. */
+export function getMyCertification(userId: string) {
+  return Certification.findOne({ userId: new Types.ObjectId(userId) });
+}
+
+export function getCertificationById(id: string) {
+  return Certification.findById(id);
+}
+
+export async function verifyByPublicId(certificateId: string) {
+  const cert = await Certification.findOne({ certificateId });
+  if (!cert) throw new AppError('NOT_FOUND', 'Certificate not found', 404);
+
+  const user = await User.findById(cert.userId).lean();
+  return {
+    certificateId: cert.certificateId,
+    highestLevel: cert.highestLevel,
+    issuedAt: cert.issuedAt,
+    user: user ? { name: user.name, email: user.email } : undefined,
+  };
+}
+
+/** Ensure a PDF exists for the certification; generate/update and persist path. */
+export async function ensurePdfForCertificate(certId: string): Promise<CertificationDoc> {
+  const cert = await Certification.findById(certId);
+  if (!cert) throw new AppError('NOT_FOUND', 'Certificate not found', 404);
+
+  const user = await User.findById(cert.userId).lean();
+  if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
+
+  const dir = path.join(env.UPLOAD_DIR, 'certificates', String(cert.userId));
+  const outPath = path.join(dir, `${cert.certificateId}.pdf`);
+
+  const needGen =
+    !cert.pdfUrl ||
+    cert.pdfUrl !== outPath ||
+    !(await fs.pathExists(cert.pdfUrl).catch(() => false));
+
+  if (needGen) {
+    await generateCertificatePDF({
+      outPath,
+      name: user.name,
+      email: user.email,
+      level: cert.highestLevel,
+      issuedAt: cert.issuedAt,
+      certificateId: cert.certificateId,
+    });
+    cert.pdfUrl = outPath;
+    await cert.save();
+  }
+  return cert;
+}
+
+/** Upsert and keep the user's highest achieved level; regenerate cert/pdf if level increases. */
+export async function updateHighestCertificate(userId: string, highest: Level) {
+  // Fetch current
+  const existing = await Certification.findOne({ userId: new Types.ObjectId(userId) });
+  const levelOrder: Level[] = ['A1','A2','B1','B2','C1','C2'];
+  const isHigher = !existing || levelOrder.indexOf(highest) > levelOrder.indexOf(existing.highestLevel);
+
+  if (!existing) {
+    const doc = await Certification.create({
+      userId: new Types.ObjectId(userId),
+      highestLevel: highest,
+      issuedAt: new Date(),
+      certificateId: crypto.randomUUID(),
+    });
+    await ensurePdfForCertificate(String(doc._id));
+    return doc;
+  }
+
+  if (!isHigher) {
+    // Still ensure PDF exists (might be missing after clean deploy)
+    await ensurePdfForCertificate(String(existing._id));
+    return existing;
+  }
+
+  existing.highestLevel = highest;
+  existing.issuedAt = new Date();
+  existing.certificateId = crypto.randomUUID(); // new public id per new level
+  existing.pdfUrl = null; // force regeneration
+  await existing.save();
+  await ensurePdfForCertificate(String(existing._id));
+  return existing;
+}
+
 ```
 
 ```javascript
@@ -2473,11 +2707,22 @@ import { Types } from 'mongoose';
 import { env } from '../config/env';
 import { AppError } from '../utils/error';
 import { type Level, Question } from '../models/Question';
-import { ExamSession, type IViolationEvent } from '../models/ExamSession';
+import { ExamSession, type ExamStatus as SessionStatus ,  type IViolationEvent } from '../models/ExamSession';
 import { User } from '../models/User';
-import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
 import { assembleChunks } from './video.service';
+import { updateHighestCertificate } from './certification.service';
+
+type FinalExamStatus = Exclude<SessionStatus, 'active'>;
+
+export type SubmitExamResult = {
+  sessionId: string;
+  status: FinalExamStatus;         // always a final/non-active status
+  scorePct: number;
+  proceedNext: boolean;
+  awardedLevel?: Level;
+  already?: true;          // <-- returned if user tries to submit a non-active session
+};
 
 function levelsForStep(step: 1 | 2 | 3) {
   if (step === 1) return ['A1', 'A2'] as const;
@@ -2646,22 +2891,41 @@ export async function submitExam(params: {
   userId: string;
   sessionId: string;
   reason?: 'auto' | 'user';
-}) {
-  const { userId, sessionId } = params;
+}): Promise<SubmitExamResult> {
+  const { userId, sessionId} = params;
   const session = await ExamSession.findOne({ _id: sessionId, userId });
   if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
-  if (session.status !== 'active') {
-    return { already: true, sessionId };
+
+ if (session.status !== 'active') {
+    const allowed: readonly FinalExamStatus[] = ['submitted','expired','abandoned'] as const;
+    const st = session.status as SessionStatus;
+    const safeStatus: FinalExamStatus = allowed.includes(st as FinalExamStatus)
+      ? (st as FinalExamStatus)
+      : 'submitted';
+
+    return {
+      sessionId,
+      status: safeStatus,
+      scorePct: session.scorePct ?? 0,
+      proceedNext: false,
+      ...(session.awardedLevel ? { awardedLevel: session.awardedLevel as Level } : {}),
+      already: true as const,
+    };
   }
 
   const now = new Date();
   const expired = now > session.deadlineAt;
-  session.status = expired ? 'expired' : 'submitted';
+
+    // Compute and persist the final status
+    const finalStatus: FinalExamStatus = expired ? 'expired' : 'submitted';
+  session.status = finalStatus;
+
   session.endAt = now;
 
   // Score
   const ids = session.questions.map((q) => q.questionId);
   const bank = await Question.find({ _id: { $in: ids } }, { _id: 1, correctIndex: 1 }).lean();
+
   const correctById = new Map(bank.map((b) => [String(b._id), b.correctIndex]));
 
   let correct = 0;
@@ -2677,7 +2941,11 @@ export async function submitExam(params: {
   const scorePct = Math.round((correct / session.totalQuestions) * 10000) / 100; // 2 decimals
   session.scorePct = scorePct;
 
-  const { level, proceedNext } = mapScoreToLevel(session.step, scorePct); // per spec thresholds
+  const mapped = mapScoreToLevel(session.step as 1|2|3, scorePct);
+  const level = mapped.level as Level | undefined;
+  const proceedNext = !!mapped.proceedNext;
+
+
   if (level) session.awardedLevel = level;
 
   // Step 1 <25% locks retake
@@ -2688,13 +2956,12 @@ export async function submitExam(params: {
   await session.save();
 
   type AwardedOnly = { awardedLevel?: Level };
-
   const prior: AwardedOnly[] = await ExamSession.find({
     userId,
-    status: { $in: ['submitted', 'expired'] },
+    status: { $in: ['submitted', 'expired', 'auto-submitted', 'closed'] },
   })
-    .select('awardedLevel')
-    .lean();
+  .select('awardedLevel')
+  .lean();
 
   let highest: Level | undefined = undefined;
   for (const s of prior) {
@@ -2703,27 +2970,27 @@ export async function submitExam(params: {
   highest = maxLevel(highest, session.awardedLevel);
 
   if (highest) {
-    const certificateId = crypto.randomUUID();
-    await Certification.updateOne(
-      { userId },
-      { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } },
-      { upsert: true },
-    );
+    try {
+      await updateHighestCertificate(userId, highest);
+    } catch (e) {
+      // Non-fatal: scoring should not fail if certificate generation hiccups
+      console.error('Certificate update failed for user', userId, e);
+    }
   }
 
   try {
-  await assembleChunks({ sessionId });
-} catch (e) {
-  // Non-fatal: we don't want submission to fail because of video assembly
-  console.error('Video assembly failed for session', sessionId, e);
-}
+    await assembleChunks({ sessionId });
+  } catch (e) {
+    // Non-fatal: we don't want submission to fail because of video assembly
+    console.error('Video assembly failed for session', sessionId, e);
+  }
 
   return {
-    sessionId,
-    status: session.status,
+      sessionId,
+    status: finalStatus,
     scorePct,
-    awardedLevel: session.awardedLevel,
-    proceedNext: !!proceedNext,
+    ...(highest ? { awardedLevel: highest } : {}), // OMIT when undefined
+    proceedNext,              // boolean
   };
 }
 
@@ -3154,6 +3421,93 @@ export async function assembleChunks(params: { sessionId: string; expectedExt?: 
 
 ```javascript
 // src/sockets/exam.socket.ts
+import type { Server, Socket } from 'socket.io';
+import { Types } from 'mongoose';
+import { ExamSession } from '../models/ExamSession';
+import type { AccessTokenPayload } from '../utils/jwt';
+import { getIO } from '../config/socket';
+
+type Sock = Socket & { data: { user: AccessTokenPayload } };
+const roomFor = (id: string) => `session:${id}`;
+
+// Track rooms we should emit timer ticks to
+const activeSessionIds = new Set<string>();
+let timerStarted = false;
+
+export function registerExamSocketHandlers(io: Server) {
+  io.on('connection', (socket: Sock) => {
+    const { sub: userId, role } = socket.data.user;
+
+    socket.on('session:join', async (payload: { sessionId: string }, ack?: (ok: boolean, reason?: string) => void) => {
+      try {
+        const s = await ExamSession.findById(payload.sessionId)
+          .select('_id userId status deadlineAt step')
+          .lean();
+
+        if (!s) return ack?.(false, 'Not found');
+
+        const isOwner = String(s.userId) === userId;
+        const canJoin =
+          (role === 'student' && isOwner) ||
+          (role === 'supervisor') ||
+          (role === 'admin');
+
+        if (!canJoin) return ack?.(false, 'Forbidden');
+
+        const room = roomFor(String(s._id));
+        await socket.join(room);
+        activeSessionIds.add(String(s._id));
+        ack?.(true);
+
+        // Send initial status snapshot
+        const timeLeftSec = Math.max(0, Math.floor((new Date(s.deadlineAt).getTime() - Date.now()) / 1000));
+        io.to(room).emit('session:timer', { sessionId: String(s._id), timeLeftSec, status: s.status, step: s.step });
+      } catch {
+        ack?.(false, 'Error');
+      }
+    });
+
+    socket.on('disconnect', () => {
+      // We keep the set relaxed; timer loop checks DB status anyway
+    });
+  });
+
+  // Start a global 5s ticker once
+  if (!timerStarted) {
+    timerStarted = true;
+    setInterval(async () => {
+      if (activeSessionIds.size === 0) return;
+      const ids = Array.from(activeSessionIds).map((id) => new Types.ObjectId(id));
+      const sessions = await ExamSession.find({ _id: { $in: ids } })
+        .select('_id status deadlineAt')
+        .lean();
+
+      for (const s of sessions) {
+        const timeLeftSec = Math.max(0, Math.floor((new Date(s.deadlineAt).getTime() - Date.now()) / 1000));
+        getIO().to(roomFor(String(s._id))).emit('session:timer', {
+          sessionId: String(s._id),
+          timeLeftSec,
+          status: s.status,
+        });
+      }
+    }, 5000);
+  }
+}
+
+/** Server-side emits for controllers/services */
+export function emitSessionStart(sessionId: string, data: { userId: string; step: 1|2|3; deadlineAt: string; totalQuestions: number; }) {
+  getIO().to(roomFor(sessionId)).emit('session:start', { sessionId, ...data });
+}
+export function emitSessionAnswer(sessionId: string, data: { questionId: string; selectedIndex: number; answeredAt: string; }) {
+  getIO().to(roomFor(sessionId)).emit('session:answer', { sessionId, ...data });
+}
+export function emitSessionViolation(sessionId: string, data: { type: string; occurredAt: string }) {
+  getIO().to(roomFor(sessionId)).emit('session:violation', { sessionId, ...data });
+}
+export function emitSessionSubmit(sessionId: string, data: { status: string; scorePct: number; awardedLevel?: string; proceedNext?: boolean; }) {
+  getIO().to(roomFor(sessionId)).emit('session:submit', { sessionId, ...data });
+}
+
 ```
 
 ```javascript
@@ -3528,6 +3882,67 @@ export async function paginate<T>(
 
 ```javascript
 // src/utils/pdf.ts
+import fs from 'fs-extra';
+import path from 'node:path';
+import PDFDocument from 'pdfkit';
+
+export type CertPdfInput = {
+  outPath: string;
+  name: string;
+  email: string;
+  level: 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2';
+  issuedAt: Date;
+  certificateId: string;
+};
+
+export async function generateCertificatePDF(input: CertPdfInput) {
+  await fs.ensureDir(path.dirname(input.outPath));
+
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 72, right: 72, bottom: 72, left: 72 }});
+  const tmp = `${input.outPath}.tmp`;
+  const stream = fs.createWriteStream(tmp);
+  doc.pipe(stream);
+
+  // Header
+  doc.fontSize(22).text('Test_School – Certificate of Digital Competency', { align: 'center' });
+  doc.moveDown(1);
+  doc.fontSize(14).fillColor('#555').text('This certifies that', { align: 'center' });
+  doc.moveDown(0.5);
+
+  // Name
+  doc.fontSize(28).fillColor('#000').text(input.name, { align: 'center' });
+  doc.moveDown(0.25);
+  doc.fontSize(12).fillColor('#333').text(input.email, { align: 'center' });
+
+  doc.moveDown(1.5);
+  doc.fontSize(16).fillColor('#000').text('has achieved the level', { align: 'center' });
+  doc.moveDown(0.5);
+  doc.fontSize(40).text(input.level, { align: 'center' });
+
+  doc.moveDown(1.5);
+  doc.fontSize(12).fillColor('#333')
+    .text(`Issued on: ${input.issuedAt.toISOString().slice(0, 10)}`, { align: 'center' });
+  doc.text(`Certificate ID: ${input.certificateId}`, { align: 'center' });
+
+  doc.moveDown(2);
+  doc.fontSize(10).fillColor('#777')
+    .text('Verification: Provide this Certificate ID to verify via the public endpoint.', { align: 'center' });
+
+  // Signature line (simple)
+  doc.moveDown(3);
+  doc.fontSize(12).fillColor('#000').text('__________________________', { align: 'center' });
+  doc.fontSize(10).fillColor('#555').text('Authorized Signatory', { align: 'center' });
+
+  doc.end();
+
+  await new Promise<void>((resolve, reject) => {
+    stream.on('finish', resolve);
+    stream.on('error', reject);
+  });
+  await fs.move(tmp, input.outPath, { overwrite: true });
+  return { path: input.outPath };
+}
+
 ```
 
 ```javascript
@@ -3638,6 +4053,18 @@ export const ListCompetencyQuery = z.object({
 
 ```javascript
 // validators/config.validators.ts
+```
+
+```javascript
+// validators/certification.validators.ts
+import { z } from 'zod';
+
+export const ObjectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+
+export const CertIdParams = z.object({ id: ObjectId });
+export const VerifyPublicIdParams = z.object({
+  certificateId: z.string().min(10).max(100),
+});
 ```
 
 ```javascript

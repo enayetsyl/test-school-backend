@@ -9,7 +9,7 @@ export interface ICertification {
   highestLevel: Level;
   issuedAt: Date;
   certificateId: string; // UUID-ish for public verification
-  pdfUrl?: string;
+  pdfUrl?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -21,7 +21,7 @@ const CertificationSchema = new Schema<ICertification>(
     highestLevel: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'], required: true },
     issuedAt: { type: Date, required: true },
     certificateId: { type: String, required: true, index: true, unique: true },
-    pdfUrl: { type: String },
+    pdfUrl: { type: String, default: null },
   },
   { timestamps: true },
 );

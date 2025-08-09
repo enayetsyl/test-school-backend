@@ -4,11 +4,26 @@ import { Types } from 'mongoose';
 import { env } from '../config/env';
 import { AppError } from '../utils/error';
 import { type Level, Question } from '../models/Question';
-import { ExamSession, type IViolationEvent } from '../models/ExamSession';
+import {
+  ExamSession,
+  type ExamStatus as SessionStatus,
+  type IViolationEvent,
+} from '../models/ExamSession';
 import { User } from '../models/User';
-import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
 import { assembleChunks } from './video.service';
+import { updateHighestCertificate } from './certification.service';
+
+type FinalExamStatus = Exclude<SessionStatus, 'active'>;
+
+export type SubmitExamResult = {
+  sessionId: string;
+  status: FinalExamStatus; // always a final/non-active status
+  scorePct: number;
+  proceedNext: boolean;
+  awardedLevel?: Level;
+  already?: true; // <-- returned if user tries to submit a non-active session
+};
 
 function levelsForStep(step: 1 | 2 | 3) {
   if (step === 1) return ['A1', 'A2'] as const;
@@ -177,22 +192,41 @@ export async function submitExam(params: {
   userId: string;
   sessionId: string;
   reason?: 'auto' | 'user';
-}) {
+}): Promise<SubmitExamResult> {
   const { userId, sessionId } = params;
   const session = await ExamSession.findOne({ _id: sessionId, userId });
   if (!session) throw new AppError('NOT_FOUND', 'Session not found', 404);
+
   if (session.status !== 'active') {
-    return { already: true, sessionId };
+    const allowed: readonly FinalExamStatus[] = ['submitted', 'expired', 'abandoned'] as const;
+    const st = session.status as SessionStatus;
+    const safeStatus: FinalExamStatus = allowed.includes(st as FinalExamStatus)
+      ? (st as FinalExamStatus)
+      : 'submitted';
+
+    return {
+      sessionId,
+      status: safeStatus,
+      scorePct: session.scorePct ?? 0,
+      proceedNext: false,
+      ...(session.awardedLevel ? { awardedLevel: session.awardedLevel as Level } : {}),
+      already: true as const,
+    };
   }
 
   const now = new Date();
   const expired = now > session.deadlineAt;
-  session.status = expired ? 'expired' : 'submitted';
+
+  // Compute and persist the final status
+  const finalStatus: FinalExamStatus = expired ? 'expired' : 'submitted';
+  session.status = finalStatus;
+
   session.endAt = now;
 
   // Score
   const ids = session.questions.map((q) => q.questionId);
   const bank = await Question.find({ _id: { $in: ids } }, { _id: 1, correctIndex: 1 }).lean();
+
   const correctById = new Map(bank.map((b) => [String(b._id), b.correctIndex]));
 
   let correct = 0;
@@ -208,7 +242,10 @@ export async function submitExam(params: {
   const scorePct = Math.round((correct / session.totalQuestions) * 10000) / 100; // 2 decimals
   session.scorePct = scorePct;
 
-  const { level, proceedNext } = mapScoreToLevel(session.step, scorePct); // per spec thresholds
+  const mapped = mapScoreToLevel(session.step as 1 | 2 | 3, scorePct);
+  const level = mapped.level as Level | undefined;
+  const proceedNext = !!mapped.proceedNext;
+
   if (level) session.awardedLevel = level;
 
   // Step 1 <25% locks retake
@@ -219,10 +256,9 @@ export async function submitExam(params: {
   await session.save();
 
   type AwardedOnly = { awardedLevel?: Level };
-
   const prior: AwardedOnly[] = await ExamSession.find({
     userId,
-    status: { $in: ['submitted', 'expired'] },
+    status: { $in: ['submitted', 'expired', 'auto-submitted', 'closed'] },
   })
     .select('awardedLevel')
     .lean();
@@ -234,12 +270,12 @@ export async function submitExam(params: {
   highest = maxLevel(highest, session.awardedLevel);
 
   if (highest) {
-    const certificateId = crypto.randomUUID();
-    await Certification.updateOne(
-      { userId },
-      { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } },
-      { upsert: true },
-    );
+    try {
+      await updateHighestCertificate(userId, highest);
+    } catch (e) {
+      // Non-fatal: scoring should not fail if certificate generation hiccups
+      console.error('Certificate update failed for user', userId, e);
+    }
   }
 
   try {
@@ -251,10 +287,10 @@ export async function submitExam(params: {
 
   return {
     sessionId,
-    status: session.status,
+    status: finalStatus,
     scorePct,
-    awardedLevel: session.awardedLevel,
-    proceedNext: !!proceedNext,
+    ...(highest ? { awardedLevel: highest } : {}), // OMIT when undefined
+    proceedNext, // boolean
   };
 }
 
