@@ -236,10 +236,12 @@ RATE_LIMIT_WINDOW_MS=
 RATE_LIMIT_MAX=
 CSRF_ENABLED=
 
+SEB_MODE=block
+TIME_PER_QUESTION_SECONDS=60
 
-
-SEB_MODE=
-TIME_PER_QUESTION_SECONDS=
+SEED_ADMIN_EMAIL=enayetflweb@gmail.com
+SEED_ADMIN_NAME=enayet
+SEED_ADMIN_PASS=Ab123456@
 ```
 
 ```javascript
@@ -321,7 +323,6 @@ export const connectDB = async () => {
 ```
 
 ```javascript
-//  src/config/env.ts
 import { config } from 'dotenv';
 import { z } from 'zod';
 
@@ -363,6 +364,10 @@ const EnvSchema = z.object({
 
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
   RATE_LIMIT_MAX: z.coerce.number().default(100),
+
+  SEED_ADMIN_EMAIL: z.email(),
+  SEED_ADMIN_NAME: z.string(),
+  SEED_ADMIN_PASS: z.string(),
 });
 
 const parsed = EnvSchema.safeParse(process.env);
@@ -381,6 +386,85 @@ export const isProd = env.NODE_ENV === 'production';
 
 ```javascript
 // src/controllers/auth.controller.ts
+import type { Request, Response } from 'express';
+import type { UserDoc } from '../models/User';
+import { asyncHandler } from '../utils/asyncHandler';
+import {
+  registerUser,
+  loginUser,
+  rotateRefreshToken,
+  logoutUser,
+  sendOtp,
+  verifyOtp,
+  forgotPassword,
+  resetPassword,
+} from '../services/auth.service';
+import { setRefreshCookie, clearRefreshCookie, readRefreshFromCookieOrHeader } from '../utils/cookies';
+import { sendOk, sendCreated } from '../utils/respond';
+
+
+export const register = asyncHandler(async (req: Request, res: Response) => {
+  const user = await registerUser(req.body);
+  return sendCreated(res, { user: publicUser(user) }, 'Registered. Verification code sent to email.');
+});
+
+export const login = asyncHandler(async (req: Request, res: Response) => {
+  const { user, accessToken, refreshToken } = await loginUser(req.body);
+  setRefreshCookie(res, refreshToken);
+  return sendOk(res, { user: publicUser(user), accessToken });
+});
+
+export const refresh = asyncHandler(async (req: Request, res: Response) => {
+  const rt = readRefreshFromCookieOrHeader(req);
+  if (!rt) return res.status(401).json({ success: false, code: 'UNAUTHORIZED', message: 'Missing refresh token' });
+
+  const { accessToken, refreshToken } = await rotateRefreshToken(rt);
+  setRefreshCookie(res, refreshToken);
+  return sendOk(res, { accessToken });
+});
+
+export const logout = asyncHandler(async (req: Request, res: Response) => {
+  const rt = readRefreshFromCookieOrHeader(req);
+  await logoutUser(rt);
+  clearRefreshCookie(res);
+  return res.noContent();
+});
+
+export const sendOtpCtrl = asyncHandler(async (req: Request, res: Response) => {
+  await sendOtp(req.body.email, req.body.purpose);
+  return sendOk(res, { sent: true }, 'OTP sent');
+});
+
+export const verifyOtpCtrl = asyncHandler(async (req: Request, res: Response) => {
+  const out = await verifyOtp(req.body.email, req.body.otp, req.body.purpose);
+  return sendOk(res, out, 'OTP verified');
+});
+
+export const forgot = asyncHandler(async (req: Request, res: Response) => {
+  await forgotPassword(req.body.email);
+  return sendOk(res, { sent: true }, 'If the email exists, an OTP has been sent.');
+});
+
+export const reset = asyncHandler(async (req: Request, res: Response) => {
+  await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+  return sendOk(res, { reset: true }, 'Password reset successful. Please login.');
+});
+
+export function publicUser(u: UserDoc) {
+  // keep tight: do not expose sensitive props
+  return {
+     id: u._id.toString(),
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    emailVerified: u.emailVerified,
+    status: u.status,
+    isLockedFromStep1: u.isLockedFromStep1 ?? false,
+    createdAt: u.createdAt,
+    updatedAt: u.updatedAt,
+  };
+}
+
 ```
 
 ```javascript
@@ -501,6 +585,24 @@ export const authLimiter = rateLimit({
 
 ```javascript
 // src/middleware/rbac.middleware.ts
+import type { Request, Response, NextFunction } from 'express';
+import type { AccessTokenPayload } from '../utils/jwt';
+import { AppError } from '../utils/error';
+
+declare module 'express-serve-static-core' {
+  interface Request {
+    user?: AccessTokenPayload;
+  }
+}
+
+export function requireRole(...roles: AccessTokenPayload['role'][]) {
+  return (req: Request, _res: Response, next: NextFunction) => {
+    if (!req.user) throw new AppError('UNAUTHORIZED', 'Login required', 401);
+    if (!roles.includes(req.user.role)) throw new AppError('FORBIDDEN', 'Insufficient role', 403);
+    next();
+  };
+}
+
 ```
 
 ```javascript
@@ -648,7 +750,42 @@ function sendZodError(res: Response, error: ZodError) {
 ```
 
 ```javascript
-// src/models/OtpToken.ts
+// src/models/Question.ts
+import { Schema, model } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+
+
+export type OtpPurpose = 'verify' | 'reset';
+
+export interface IOtpToken extends Document {
+  userId: Types.ObjectId;
+  channel: 'email';
+  otpHash: string;
+  purpose: OtpPurpose;
+  expiresAt: Date;      // TTL
+  consumedAt?: Date;
+  createdAt: Date;
+}
+
+export type OtpTokenDoc = HydratedDocument<IOtpToken>;
+
+const OtpTokenSchema = new Schema<IOtpToken>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, required: true },
+    channel: { type: String, enum: ['email'], default: 'email' },
+    otpHash: { type: String, required: true },
+    purpose: { type: String, enum: ['verify', 'reset'], required: true, index: true },
+    expiresAt: { type: Date, required: true, index: true },
+    consumedAt: { type: Date },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+// TTL index (Mongo will purge expired)
+OtpTokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export const OtpToken = model<IOtpToken>('OtpToken', OtpTokenSchema);
+
 ```
 
 ```javascript
@@ -661,6 +798,38 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/models/RefreshToken.ts
+import { Schema, model } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+
+
+export interface IRefreshToken extends Document {
+  userId: Types.ObjectId;
+  tokenHash: string;            // store hash, never raw token
+  expiresAt: Date;
+  revokedAt?: Date;
+  ip?: string;
+  userAgent?: string;
+  createdAt: Date;
+}
+
+export type RefreshTokenDoc = HydratedDocument<IRefreshToken>;
+
+const RefreshTokenSchema = new Schema<IRefreshToken>(
+  {
+    userId: { type: Schema.Types.ObjectId, ref: 'User', index: true, required: true },
+    tokenHash: { type: String, required: true, index: true },
+    expiresAt: { type: Date, required: true, index: true },
+    revokedAt: { type: Date },
+    ip: { type: String },
+    userAgent: { type: String },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+RefreshTokenSchema.index({ userId: 1, tokenHash: 1 }, { unique: true });
+
+export const RefreshToken = model<IRefreshToken>('RefreshToken', RefreshTokenSchema);
+
 ```
 
 ```javascript
@@ -669,10 +838,90 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/models/User.ts
+import { Schema, model } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+
+export type UserRole = 'admin' | 'student' | 'supervisor';
+export type UserStatus = 'active' | 'inactive';
+
+export interface IUser extends Document {
+   _id: string | Types.ObjectId;
+  name: string;
+  email: string;
+  phone?: string;
+  role: UserRole;
+  passwordHash: string;
+  emailVerified: boolean;
+  status: UserStatus;
+  isLockedFromStep1?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+
+export type UserDoc = HydratedDocument<IUser>;
+const UserSchema = new Schema<IUser>(
+  {
+    name: { type: String, required: true, trim: true, minlength: 2, maxlength: 120 },
+    email: { type: String, required: true, unique: true, lowercase: true, index: true },
+    phone: { type: String },
+    role: { type: String, enum: ['admin', 'student', 'supervisor'], default: 'student', index: true },
+    passwordHash: { type: String, required: true },
+    emailVerified: { type: Boolean, default: false },
+    status: { type: String, enum: ['active', 'disabled'], default: 'active' },
+    isLockedFromStep1: { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
+
+
+export const User = model<IUser>('User', UserSchema);
+
 ```
 
 ```javascript
 // src/routes/auth.routes.ts
+import { Router } from 'express';
+
+import { validate } from '../middleware/validation.middleware';
+import {
+  RegisterSchema,
+  LoginSchema,
+  RefreshSchema,
+  LogoutSchema,
+  SendOtpSchema,
+  VerifyOtpSchema,
+  ForgotSchema,
+  ResetSchema,
+} from '../validators/auth.validators';
+import {
+  register,
+  login,
+  refresh,
+  logout,
+  sendOtpCtrl,
+  verifyOtpCtrl,
+  forgot,
+  reset,
+} from '../controllers/auth.controller';
+import { authLimiter } from '../middleware/rate-limit';
+
+const router = Router();
+
+router.post('/register', authLimiter, validate(RegisterSchema), register);
+router.post('/login', authLimiter, validate(LoginSchema), login);
+router.post('/token/refresh', authLimiter, validate(RefreshSchema), refresh);
+router.post('/logout', validate(LogoutSchema), logout);
+
+router.post('/otp/send', authLimiter, validate(SendOtpSchema), sendOtpCtrl);
+router.post('/otp/verify', authLimiter, validate(VerifyOtpSchema), verifyOtpCtrl);
+router.post('/otp/resend', authLimiter, validate(SendOtpSchema), sendOtpCtrl);
+
+router.post('/forgot', authLimiter, validate(ForgotSchema), forgot);
+router.post('/reset', authLimiter, validate(ResetSchema), reset);
+
+export default router;
 ```
 
 ```javascript
@@ -697,14 +946,71 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/routes/question.routes.ts
+import { Router } from 'express';
+import authRoutes from './auth.routes';
+import userRoutes from './user.routes';
+
+const router = Router();
+
+router.get('/health', (_req, res) => res.ok({ ok: true }));
+
+router.use('/auth', authRoutes);
+router.use('/users', userRoutes);
+
+export default router;
 ```
 
 ```javascript
 // src/routes/user.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+
+const router = Router();
+
+router.get('/me', requireAuth, (req, res) => {
+  return res.ok({ user: req.user }, 'Current user');
+});
+
+export default router;
 ```
 
 ```javascript
 // src/seed/seedAdmin.ts
+import { connectDB } from '../config/db';
+import { env } from '../config/env';
+import { User } from '../models/User';
+import { hashPassword } from '../utils/hasher';
+
+async function run() {
+  await connectDB();
+  const email = env.SEED_ADMIN_EMAIL;
+  const name = env.SEED_ADMIN_NAME;
+  const pass = env.SEED_ADMIN_PASS;
+
+  const existing = await User.findOne({ email });
+  if (existing) {
+    console.log('Admin already exists:', email);
+    process.exit(0);
+  }
+
+  const passwordHash = await hashPassword(pass);
+  await User.create({
+    name,
+    email,
+    passwordHash,
+    role: 'admin',
+    emailVerified: true,
+    status: 'active',
+  });
+
+  console.log('✅ Admin created:', email, 'password:', pass);
+  process.exit(0);
+}
+
+run().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
 ```
 
 ```javascript
@@ -717,6 +1023,207 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/services/auth.service.ts
+import crypto from 'node:crypto';
+import { Types } from 'mongoose';
+import { User } from '../models/User';
+import { OtpToken } from '../models/OtpToken';
+import { RefreshToken } from '../models/RefreshToken';
+import { hashPassword, comparePassword } from '../utils/hasher';
+import {
+  signAccessToken,
+  signRefreshToken,
+  verifyRefreshToken,
+  type AccessTokenPayload,
+} from '../utils/jwt';
+import { sendOtpEmail, sendResetConfirmation } from './mailer.service';
+import { AppError } from '../utils/error';
+import { env } from '../config/env';
+
+function hashRefreshForDB(token: string) {
+  // Use a fast, one-way hash for DB storage (not bcrypt – we just need lookup)
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+export async function registerUser(params: { name: string; email: string; password: string }) {
+  const exists = await User.findOne({ email: params.email });
+  if (exists) throw new AppError('CONFLICT', 'Email already registered', 409);
+
+  const passwordHash = await hashPassword(params.password);
+  const user = await User.create({
+    name: params.name,
+    email: params.email,
+    passwordHash,
+    role: 'student',
+    emailVerified: false,
+    status: 'active',
+  });
+  // send verification OTP (optional)
+  const otp = await issueOtp(user._id.toString(), 'verify');
+  await sendOtpEmail(user.email, otp, 'verify');
+
+  return user;
+}
+
+export async function loginUser(params: { email: string; password: string }) {
+  const user = await User.findOne({ email: params.email });
+  if (!user) throw new AppError('UNAUTHORIZED', 'Invalid credentials', 401);
+  if (user.status !== 'active') throw new AppError('FORBIDDEN', 'Account disabled', 403);
+
+  const ok = await comparePassword(params.password, user.passwordHash);
+  if (!ok) throw new AppError('UNAUTHORIZED', 'Invalid credentials', 401);
+
+  const tokens = await issueTokens(user._id.toString(), user.role);
+  return { user, ...tokens };
+}
+
+export async function issueTokens(userId: string, role: AccessTokenPayload['role']) {
+  const jti = crypto.randomUUID();
+  const access = signAccessToken({ sub: userId, role, jti });
+
+  const refreshJti = crypto.randomUUID();
+  const refresh = signRefreshToken({ sub: userId, jti: refreshJti });
+  const tokenHash = hashRefreshForDB(refresh);
+  const expiresAt = new Date(Date.now() + parseExpiryMs(env.JWT_REFRESH_EXPIRES_IN));
+
+  await RefreshToken.create({
+    userId: new Types.ObjectId(userId),
+    tokenHash,
+    expiresAt,
+  });
+
+  return { accessToken: access, refreshToken: refresh };
+}
+
+export async function rotateRefreshToken(rawToken: string) {
+  const decoded = verifyRefreshToken(rawToken); // throws if invalid or wrong typ
+  const tokenHash = hashRefreshForDB(rawToken);
+
+  // Check not revoked/expired in DB
+  const doc = await RefreshToken.findOne({ userId: decoded.sub, tokenHash });
+  if (!doc || doc.revokedAt || doc.expiresAt < new Date()) {
+    throw new AppError('UNAUTHORIZED', 'Invalid refresh token', 401);
+  }
+
+  // Revoke old & issue new pair
+  doc.revokedAt = new Date();
+  await doc.save();
+
+  const user = await User.findById(decoded.sub);
+  if (!user) throw new AppError('UNAUTHORIZED', 'User not found', 401);
+
+  return issueTokens(user._id.toString(), user.role);
+}
+
+export async function logoutUser(rawToken?: string) {
+  if (!rawToken) return;
+  const tokenHash = hashRefreshForDB(rawToken);
+  await RefreshToken.updateMany({ tokenHash, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
+}
+
+export async function issueOtp(userId: string, purpose: 'verify' | 'reset') {
+  const otp = generateOtp(6);
+  const otpHash = await hashPassword(otp, 10);
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+  await OtpToken.create({
+    userId: new Types.ObjectId(userId),
+    channel: 'email',
+    otpHash,
+    purpose,
+    expiresAt,
+  });
+
+  return otp;
+}
+
+export async function sendOtp(email: string, purpose: 'verify' | 'reset') {
+  const user = await User.findOne({ email });
+  if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
+
+  const otp = await issueOtp(user._id.toString(), purpose);
+  await sendOtpEmail(user.email, otp, purpose);
+  return { sent: true };
+}
+
+export async function verifyOtp(email: string, otp: string, purpose: 'verify' | 'reset') {
+  const user = await User.findOne({ email });
+  if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
+
+  const record = await OtpToken.findOne({
+    userId: user._id,
+    purpose,
+    consumedAt: { $exists: false },
+    expiresAt: { $gt: new Date() },
+  }).sort({ createdAt: -1 });
+
+  if (!record) throw new AppError('UNAUTHORIZED', 'OTP expired or not found', 401);
+
+  const ok = await comparePassword(otp, record.otpHash);
+  if (!ok) throw new AppError('UNAUTHORIZED', 'Invalid OTP', 401);
+
+  record.consumedAt = new Date();
+  await record.save();
+
+  if (purpose === 'verify') {
+    user.emailVerified = true;
+    await user.save();
+  }
+
+  return { verified: true };
+}
+
+export async function forgotPassword(email: string) {
+  const user = await User.findOne({ email });
+  if (!user) return { sent: true }; // do not leak existence
+
+  const otp = await issueOtp(user._id.toString(), 'reset');
+  await sendOtpEmail(user.email, otp, 'reset');
+  return { sent: true };
+}
+
+export async function resetPassword(email: string, otp: string, newPassword: string) {
+  const user = await User.findOne({ email });
+  if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
+
+  // verify OTP with purpose reset
+  const res = await verifyOtp(email, otp, 'reset');
+  if (!res.verified) throw new AppError('UNAUTHORIZED', 'Invalid OTP', 401);
+
+  const passwordHash = await hashPassword(newPassword);
+  user.passwordHash = passwordHash;
+  await user.save();
+
+  // revoke all refresh tokens
+  await RefreshToken.updateMany({ userId: user._id, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
+  await sendResetConfirmation(user.email);
+
+  return { reset: true };
+}
+
+function generateOtp(len: number) {
+  const bytes = crypto.randomBytes(len);
+  return Array.from(bytes, (b) => (b % 10).toString()).join('');
+}
+
+function parseExpiryMs(v: string | number): number {
+  if (typeof v === 'number') return v * 1000; // if number, assume seconds
+  // allow "7d", "15m", "3600" etc — jsonwebtoken accepts these but our env is validated as string|number
+  // here we just handle simple cases; fallback to seconds
+  const m = /^(\d+)([smhd])?$/.exec(v);
+  if (!m) return Number(v) * 1000;
+
+  const n = Number(m[1]);
+  const unit = (m[2] ?? 's') as 's' | 'm' | 'h' | 'd';
+  const map: Record<'s' | 'm' | 'h' | 'd', number> = {
+    s: 1000,
+    m: 60_000,
+    h: 3_600_000,
+    d: 86_400_000,
+  };
+
+  return n * map[unit];
+}
+
 ```
 
 ```javascript
@@ -733,6 +1240,31 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/services/mailer.service.ts
+import { getMailer } from '../utils/mailer';
+import { env } from '../config/env';
+
+export async function sendOtpEmail(to: string, otp: string, purpose: 'verify' | 'reset') {
+  const mailer = getMailer();
+  const subject =
+    purpose === 'verify' ? 'Your Test_School verification code' : 'Your Test_School reset code';
+  await mailer.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject,
+    text: `Your OTP is: ${otp}. It expires in 10 minutes.`,
+  });
+}
+
+export async function sendResetConfirmation(to: string) {
+  const mailer = getMailer();
+  await mailer.sendMail({
+    from: env.SMTP_FROM,
+    to,
+    subject: 'Your password has been reset',
+    text: 'If you did not request this change, please contact support immediately.',
+  });
+}
+
 ```
 
 ```javascript
@@ -745,6 +1277,25 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/services/user.service.ts
+import { User, type IUser } from '../models/User';
+
+export async function findUserByEmail(email: string) {
+  return User.findOne({ email });
+}
+
+export async function createUser(data: Pick<IUser, 'name' | 'email' | 'passwordHash' | 'role'>) {
+  const user = await User.create({ ...data, emailVerified: false, status: 'active' });
+  return user;
+}
+
+export async function markEmailVerified(userId: string) {
+  await User.updateOne({ _id: userId }, { $set: { emailVerified: true } });
+}
+
+export async function updatePassword(userId: string, passwordHash: string) {
+  await User.updateOne({ _id: userId }, { $set: { passwordHash } });
+}
+
 ```
 
 ```javascript
@@ -764,6 +1315,36 @@ export interface ApiSuccess<T = unknown> {
   data: T;
   message?: string;
   meta?: Meta;
+}
+
+```
+
+```javascript
+// src/types/user.types.ts
+export interface IUser {
+  _id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'student' | 'supervisor';
+  emailVerified: boolean;
+  status: 'active' | 'inactive';
+  isLockedFromStep1?: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+  password?: string; // never expose
+  // add any other internal fields here if needed
+}
+
+export interface IPublicUser {
+  id: string;
+  name: string;
+  email: string;
+  role: 'admin' | 'student' | 'supervisor';
+  emailVerified: boolean;
+  status: 'active' | 'inactive' ;
+  isLockedFromStep1: boolean;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 ```
@@ -1087,6 +1668,47 @@ export function sendPaginated<T>(
 
 ```javascript
 // auth/validators/auth.validators.ts
+import { z } from 'zod';
+
+export const RegisterSchema = z.object({
+  name: z.string().min(2).max(120),
+  email: z.email(),
+  password: z.string().min(8).max(100),
+});
+
+export const LoginSchema = z.object({
+  email: z.email(),
+  password: z.string().min(8).max(100),
+});
+
+export const RefreshSchema = z.object({
+  // empty body; refresh token comes from cookie or Authorization header
+});
+
+export const LogoutSchema = z.object({}); // nothing needed
+
+export const SendOtpSchema = z.object({
+  email: z.email(),
+  purpose: z.enum(['verify', 'reset']),
+});
+
+export const VerifyOtpSchema = z.object({
+  email: z.email(),
+  otp: z.string().min(4).max(10),
+  purpose: z.enum(['verify', 'reset']),
+});
+
+export const ResendOtpSchema = SendOtpSchema;
+
+export const ForgotSchema = z.object({
+  email: z.email(),
+});
+
+export const ResetSchema = z.object({
+  email: z.email(),
+  otp: z.string().min(4).max(10),
+  newPassword: z.string().min(8).max(100),
+});
 ```
 
 ```javascript
