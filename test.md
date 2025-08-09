@@ -432,6 +432,132 @@ export function getIO(): SocketIOServer {
 ```
 
 ```javascript
+// src/controllers/admin.sessions.controller.ts
+import type { RequestHandler } from 'express';
+import mongoose from 'mongoose';
+// If you have a concrete model file, import it directly:
+import { model } from 'mongoose';
+const ExamSession = model('ExamSession');
+
+import type {
+  ListSessionsQueryType,
+  SessionIdParamsType,
+} from '../validators/admin.sessions.validators';
+
+
+// controllers/admin.sessions.controller.ts (top, near imports)
+type Role = 'admin' | 'student' | 'supervisor';
+
+interface UserLite {
+  _id: string;
+  name?: string;
+  email?: string;
+  role: Role;
+}
+
+type SessionStatus = 'pending' | 'active' | 'submitted' | 'cancelled';
+
+interface SessionListItem {
+  _id: string;
+  user: UserLite | null;              // populated minimal user
+  step: 1 | 2 | 3;
+  status: SessionStatus;
+  score?: number;
+  startedAt?: Date;
+  submittedAt?: Date;
+  violationsCount?: number;
+  videoRecordingMeta?: {
+    dir: string;
+    mime?: string;
+    chunks?: number;
+    assembledPath?: string;
+    sizeBytes?: number;
+    completedAt?: Date;
+  };
+}
+
+type DateRange = { $gte?: Date; $lte?: Date };
+type SessionFilter = {
+  status?: SessionStatus;
+  step?: 1 | 2 | 3;
+  user?: mongoose.Types.ObjectId;
+  startedAt?: DateRange;
+};
+
+type Step = 1 | 2 | 3;
+const isStep = (v: number): v is Step => v === 1 || v === 2 || v === 3;
+
+
+export const listSessionsCtrl: RequestHandler = async (req, res) => {
+  const { page, limit, q, status, step, userId, from, to } =
+    req.query as unknown as ListSessionsQueryType;
+
+  const filter: SessionFilter = {};
+  if (status) filter.status = status;
+  if (step !== undefined && isStep(step)) {
+  filter.step = step; // now typed as 1 | 2 | 3 ✅
+}
+  if (userId) filter.user = new mongoose.Types.ObjectId(userId);
+  if (from || to) {
+    const range: DateRange = {};
+    if (from) range.$gte = from;
+    if (to) range.$lte = to;
+    filter.startedAt = range;
+  }
+
+  const pageNum = page ?? 1;
+  const lim = limit ?? 20;
+  const skip = (pageNum - 1) * lim;
+
+  const query = ExamSession.find(filter)
+    .sort({ startedAt: -1 })
+    .skip(skip)
+    .limit(lim)
+    .select('_id user step status score startedAt submittedAt violationsCount videoRecordingMeta')
+    .populate({ path: 'user', select: 'name email role' });
+
+  const [items, total] = await Promise.all([
+    query.lean<SessionListItem[]>(),
+    ExamSession.countDocuments(filter),
+  ]);
+
+  const text = q?.toLowerCase();
+  const data = text
+    ? items.filter((it) => {
+        const name = it.user?.name?.toLowerCase() ?? '';
+        const email = it.user?.email?.toLowerCase() ?? '';
+        return name.includes(text) || email.includes(text);
+      })
+    : items;
+
+  return res.json({
+    success: true,
+    meta: {
+      page: pageNum,
+      limit: lim,
+      total,
+      pageCount: Math.max(1, Math.ceil(total / lim)),
+    },
+    data,
+  });
+};
+
+export const getSessionCtrl: RequestHandler = async (req, res) => {
+  const { id } = req.params as unknown as SessionIdParamsType;
+
+  const doc = await ExamSession.findById(id)
+    .populate({ path: 'user', select: 'name email role' })
+    .populate({ path: 'createdBy', select: 'name email role' })
+    .lean();
+
+  if (!doc) return res.status(404).json({ success: false, message: 'Session not found' });
+  return res.json({ success: true, data: doc });
+};
+
+
+```
+
+```javascript
 // src/controllers/auth.controller.ts
 import type { Request, Response } from 'express';
 import type { UserDoc } from '../models/User';
@@ -613,10 +739,6 @@ export const deleteCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res
   await logAudit(req.user!.sub, 'COMPETENCY_DELETE', { type: 'Competency', id });
   return res.ok({ competency: deleted }, 'Competency deleted');
 });
-```
-
-```javascript
-// src/controllers/config.controller.ts
 ```
 
 ```javascript
@@ -920,6 +1042,29 @@ export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
   // If your sendCsv only takes (res, rows), then change to:
   // return sendCsv(res, toRows());
 });
+```
+
+```javascript
+// src/controllers/systemConfig.controller.ts
+import type { Request, Response } from 'express';
+import { SystemConfig, loadSystemConfig } from '../models/SystemConfig';
+
+export async function getSystemConfigCtrl(_req: Request, res: Response) {
+  const cfg = await loadSystemConfig();
+  return res.json({ success: true, data: cfg });
+}
+
+export async function patchSystemConfigCtrl(req: Request, res: Response) {
+  // Only set the fields provided (respect exactOptionalPropertyTypes)
+  const $set: Record<string, unknown> = {};
+  for (const k of ['timePerQuestionSec', 'retakeLockMinutes', 'maxRetakes', 'sebMode'] as const) {
+    if (k in req.body) $set[k] = req.body[k];
+  }
+
+  const updated = await SystemConfig.findByIdAndUpdate('singleton', { $set }, { new: true, upsert: true });
+  return res.json({ success: true, message: 'Config updated', data: updated });
+}
+
 ```
 
 ```javascript
@@ -1428,6 +1573,47 @@ export const Competency = model<ICompetency>('Competency', CompetencySchema);
 ```
 
 ```javascript
+// src/models/systemConfig.ts
+import { Schema, model, type Document } from 'mongoose';
+
+export type SebMode = 'off' | 'warn' | 'enforce';
+
+export interface SystemConfigAttrs {
+  timePerQuestionSec: number;     // per question timer
+  retakeLockMinutes: number;      // lockout if Step-1 < threshold, etc.
+  maxRetakes: number;             // optional policy if you add it later
+  sebMode: SebMode;               // off | warn | enforce
+}
+
+export interface SystemConfigDoc extends Document, SystemConfigAttrs {
+  _id: string; // "singleton"
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const SystemConfigSchema = new Schema<SystemConfigDoc>(
+  {
+    _id: { type: String, default: 'singleton' }, // keep it single-document
+    timePerQuestionSec: { type: Number, default: 90, min: 30, max: 300 },
+    retakeLockMinutes: { type: Number, default: 60, min: 0, max: 24 * 60 },
+    maxRetakes: { type: Number, default: 3, min: 0, max: 10 },
+    sebMode: { type: String, enum: ['off', 'warn', 'enforce'], default: 'warn' },
+  },
+  { timestamps: true, versionKey: false }
+);
+
+export const SystemConfig = model<SystemConfigDoc>('SystemConfig', SystemConfigSchema);
+
+// Helper for callers that need config with sensible defaults
+export async function loadSystemConfig(): Promise<SystemConfigDoc> {
+  const existing = await SystemConfig.findById('singleton');
+  if (existing) return existing;
+  return SystemConfig.create({ _id: 'singleton' });
+}
+
+```
+
+```javascript
 // src/models/ExamSession.ts
 import { Schema, model } from 'mongoose';
 import type { Types, HydratedDocument } from 'mongoose';
@@ -1807,6 +1993,25 @@ export const User = model<IUser>('User', UserSchema);
 ```
 
 ```javascript
+// src/routes/admin.sessions.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { listSessionsCtrl, getSessionCtrl } from '../controllers/admin.sessions.controller';
+import { ListSessionsQuery, SessionIdParams } from '../validators/admin.sessions.validators';
+
+const router = Router();
+
+router.use(requireAuth, requireRole('admin', 'supervisor'));
+
+router.get('/', validate(ListSessionsQuery), listSessionsCtrl);
+router.get('/:id', validate(SessionIdParams), getSessionCtrl);
+
+export default router;
+```
+
+```javascript
 // src/routes/auth.routes.ts
 import { Router } from 'express';
 
@@ -1947,6 +2152,21 @@ export default router;
 
 ```javascript
 // src/routes/config.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { getSystemConfigCtrl, patchSystemConfigCtrl } from '../controllers/systemConfig.controller';
+import { PatchSystemConfigSchema } from '../validators/systemConfig.validators';
+
+const router = Router();
+
+router.use(requireAuth, requireRole('admin'));
+
+router.get('/', getSystemConfigCtrl);
+router.patch('/', validate(PatchSystemConfigSchema), patchSystemConfigCtrl);
+
+export default router;
 ```
 
 ```javascript
@@ -2020,6 +2240,8 @@ import competencyRoutes from './competency.routes';
 import questionRoutes from './question.routes';
 import examRoutes from './exam.routes';
 import certificationRoutes from './certification.routes';
+import adminConfigRoutes from './config.routes';
+import adminSessionsRoutes from './admin.sessions.routes';
 
 const router = Router();
 
@@ -2031,6 +2253,8 @@ router.use('/competencies', competencyRoutes);
 router.use('/questions', questionRoutes);
 router.use('/exam', examRoutes);
 router.use('/certifications', certificationRoutes);
+router.use('/admin/config', adminConfigRoutes);
+router.use('/admin/sessions', adminSessionsRoutes);
 
 export default router;
 ```
@@ -3978,7 +4202,34 @@ export function sendPaginated<T>(
 ```
 
 ```javascript
-// auth/validators/auth.validators.ts
+// validators/admin.sessions.validators.ts
+import { z } from 'zod';
+
+export const ListSessionsQuery = {
+  query: z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+    q: z.string().trim().optional(),
+    status: z.enum(['pending', 'active', 'submitted', 'cancelled']).optional(),
+    step: z.coerce.number().int().min(1).max(3).optional(),
+    userId: z.string().optional(),
+    from: z.coerce.date().optional(),
+    to: z.coerce.date().optional(),
+  }),
+};
+
+export const SessionIdParams = {
+  params: z.object({ id: z.string().min(1) }),
+};
+
+// ✅ export TS types for safe casting in controllers
+export type ListSessionsQueryType = z.infer<typeof ListSessionsQuery.query>;
+export type SessionIdParamsType = z.infer<typeof SessionIdParams.params>;
+
+```
+
+```javascript
+// validators/auth.validators.ts
 import { z } from 'zod';
 
 export const RegisterSchema = z.object({
@@ -4023,7 +4274,7 @@ export const ResetSchema = z.object({
 ```
 
 ```javascript
-// auth/validators/competency.validators.ts
+// validators/competency.validators.ts
 import { z } from 'zod';
 
 export const CompetencyIdParams = z.object({
@@ -4049,10 +4300,6 @@ export const ListCompetencyQuery = z.object({
   sortBy: z.enum(['name', 'code', 'createdAt']).default('createdAt').optional(),
   sortOrder: z.enum(['asc', 'desc']).default('desc').optional(),
 });
-```
-
-```javascript
-// validators/config.validators.ts
 ```
 
 ```javascript
@@ -4164,6 +4411,29 @@ export const ListQuestionQuery = z.object({
 export const ImportQuery = z.object({
   mode: z.enum(['upsert', 'insert']).default('upsert').optional(),
 });
+```
+
+```javascript
+// validators/systemConfig.validators.ts
+import { z } from 'zod';
+
+export const PatchSystemConfigSchema = {
+  body: z
+    .object({
+      timePerQuestionSec: z.number().int().min(30).max(300).optional(),
+      retakeLockMinutes: z
+        .number()
+        .int()
+        .min(0)
+        .max(24 * 60)
+        .optional(),
+      maxRetakes: z.number().int().min(0).max(10).optional(),
+      sebMode: z.enum(['off', 'warn', 'enforce']).optional(),
+    })
+    .refine((v) => Object.keys(v).length > 0, { message: 'Provide at least one field to update.' }),
+};
+
+export const GetSystemConfigQuery = {}; // nothing for now
 ```
 
 ```javascript
