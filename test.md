@@ -743,6 +743,35 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/models/Competency.ts
+import { Schema, model } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+
+export interface ICompetency extends Document {
+  _id: Types.ObjectId | string;
+  code: string;             // e.g. "COMP-01" (unique)
+  name: string;             // e.g. "Email Security"
+  description?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type CompetencyDoc = HydratedDocument<ICompetency>;
+
+const CompetencySchema = new Schema<ICompetency>(
+  {
+    code: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 50 },
+    name: { type: String, required: true, trim: true, minlength: 2, maxlength: 150 },
+    description: { type: String, trim: true, maxlength: 1000 },
+  },
+  { timestamps: true },
+);
+
+// Helpful indexes for admin search
+CompetencySchema.index({ name: 1 });
+CompetencySchema.index({ name: 'text', description: 'text' });
+
+export const Competency = model<ICompetency>('Competency', CompetencySchema);
+
 ```
 
 ```javascript
@@ -750,7 +779,7 @@ function sendZodError(res: Response, error: ZodError) {
 ```
 
 ```javascript
-// src/models/Question.ts
+// src/models/OtpToken.ts
 import { Schema, model } from 'mongoose';
 import type { Types, HydratedDocument } from 'mongoose';
 
@@ -790,6 +819,73 @@ export const OtpToken = model<IOtpToken>('OtpToken', OtpTokenSchema);
 
 ```javascript
 // src/models/Question.ts
+import { Schema, model } from 'mongoose';
+import type { Types, HydratedDocument } from 'mongoose';
+
+export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2';
+
+export interface IQuestion extends Document {
+  _id: Types.ObjectId | string;
+  competencyId: Types.ObjectId;
+  level: Level;
+  prompt: string;
+  options: string[];       // typically 4
+  correctIndex: number;    // 0-based
+  isActive: boolean;       // default true
+  meta?: {
+    difficulty?: 'easy' | 'medium' | 'hard';
+    tags?: string[];
+  };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type QuestionDoc = HydratedDocument<IQuestion>;
+
+const QuestionSchema = new Schema<IQuestion>(
+  {
+    competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true, index: true },
+    level: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'], required: true, index: true },
+    prompt: { type: String, required: true, trim: true, minlength: 10, maxlength: 1000 },
+    options: {
+      type: [String],
+      required: true,
+      validate: {
+        validator(v: unknown[]) {
+          return Array.isArray(v) && v.length >= 2 && v.length <= 10 && v.every((s) => typeof s === 'string' && s.trim().length > 0);
+        },
+        message: 'options must be 2–10 non-empty strings',
+      },
+    },
+    correctIndex: { type: Number, required: true, min: 0 },
+    isActive: { type: Boolean, default: true },
+    meta: {
+      difficulty: { type: String, enum: ['easy', 'medium', 'hard'], required: false },
+      tags: { type: [String], required: false, default: undefined },
+    },
+  },
+  { timestamps: true },
+);
+
+// Ensure correctIndex < options.length
+QuestionSchema.pre('validate', function (next) {
+  const self = this as IQuestion & { isModified: (p: string) => boolean };
+  if (Array.isArray(self.options) && typeof self.correctIndex === 'number') {
+    if (self.correctIndex < 0 || self.correctIndex >= self.options.length) {
+      return next(new Error('correctIndex must reference an item in options'));
+    }
+  }
+  next();
+});
+
+// One question per (competency, level) — matches your seed strategy
+QuestionSchema.index({ competencyId: 1, level: 1 }, { unique: true });
+
+// Basic text search
+QuestionSchema.index({ prompt: 'text' });
+
+export const Question = model<IQuestion>('Question', QuestionSchema);
+
 ```
 
 ```javascript
@@ -1015,10 +1111,144 @@ run().catch((e) => {
 
 ```javascript
 // src/seed/seedCompetencies.ts
+import { connectDB } from '../config/db';
+import { Competency } from '../models/Competency'; // expects fields: code (unique), name, description?
+
+const COMPETENCIES: Array<{ code: string; name: string; description?: string }> = [
+  { code: 'COMP-01', name: 'Email Security' },
+  { code: 'COMP-02', name: 'Password Management' },
+  { code: 'COMP-03', name: 'Phishing Awareness' },
+  { code: 'COMP-04', name: 'Safe Web Browsing' },
+  { code: 'COMP-05', name: 'Device Security' },
+  { code: 'COMP-06', name: 'Software Updates' },
+  { code: 'COMP-07', name: 'Data Backup' },
+  { code: 'COMP-08', name: 'Cloud Storage Basics' },
+  { code: 'COMP-09', name: 'Document Editing' },
+  { code: 'COMP-10', name: 'Spreadsheets' },
+  { code: 'COMP-11', name: 'Presentations' },
+  { code: 'COMP-12', name: 'File Management' },
+  { code: 'COMP-13', name: 'Networking Basics' },
+  { code: 'COMP-14', name: 'Online Communication Etiquette' },
+  { code: 'COMP-15', name: 'Video Conferencing' },
+  { code: 'COMP-16', name: 'Digital Footprint' },
+  { code: 'COMP-17', name: 'Privacy Settings' },
+  { code: 'COMP-18', name: 'Social Media Safety' },
+  { code: 'COMP-19', name: 'Cyber Hygiene' },
+  { code: 'COMP-20', name: 'Mobile Security' },
+  { code: 'COMP-21', name: 'Two‑Factor Authentication' },
+  { code: 'COMP-22', name: 'Incident Reporting' },
+];
+
+async function run() {
+  await connectDB();
+
+  const ops = COMPETENCIES.map((c) => ({
+    updateOne: {
+      filter: { code: c.code },
+      update: {
+        $setOnInsert: {
+          code: c.code,
+          name: c.name,
+          ...(c.description ? { description: c.description } : {}),
+        },
+      },
+      upsert: true,
+    },
+  }));
+
+  const res = await Competency.bulkWrite(ops, { ordered: false });
+
+  const inserted = (res.upsertedCount ?? 0);
+  const matched = (res.matchedCount ?? 0);
+  console.log(`✅ Competencies seeding complete. Inserted: ${inserted}, matched existing: ${matched}`);
+  process.exit(0);
+}
+
+run().catch((e) => {
+  console.error('Competencies seed failed:', e);
+  process.exit(1);
+});
+
 ```
 
 ```javascript
 // src/seed/seedQuestions.ts
+import { Types } from 'mongoose';
+import { connectDB } from '../config/db';
+import { Competency } from '../models/Competency';
+import { Question } from '../models/Question';
+
+type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2';
+const LEVELS: Level[] = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
+
+/**
+ * Optional helper to assign a rough difficulty by level.
+ */
+function difficultyFor(level: Level): 'easy' | 'medium' | 'hard' {
+  if (level === 'A1' || level === 'A2') return 'easy';
+  if (level === 'B1' || level === 'B2') return 'medium';
+  return 'hard';
+}
+
+function makeOptions(level: Level, compName: string): string[] {
+  // Keep deterministic to make upserts stable
+  return [
+    `Correct practice for ${compName} at ${level}`,
+    `Irrelevant step for ${compName}`,
+    `Risky approach to ${compName}`,
+    `Outdated method for ${compName}`,
+  ];
+}
+
+async function run() {
+  await connectDB();
+
+  const competencies = await Competency.find({}, { _id: 1, code: 1, name: 1 }).lean();
+  if (competencies.length === 0) {
+    console.error('No competencies found. Run seedCompetencies.ts first.');
+    process.exit(1);
+  }
+
+  const ops = competencies.flatMap((c) =>
+    LEVELS.map((lvl) => {
+      const prompt = `[${c.code} • ${lvl}] Choose the best answer related to "${c.name}".`;
+      const options = makeOptions(lvl, c.name);
+
+      return {
+        updateOne: {
+          // Use (competencyId, level) as the natural key. We keep one MCQ per level per competency.
+          filter: { competencyId: new Types.ObjectId(c._id), level: lvl },
+          update: {
+            $setOnInsert: {
+              competencyId: new Types.ObjectId(c._id),
+              level: lvl,
+              prompt,
+              options,
+              correctIndex: 0,
+              isActive: true,
+              meta: { difficulty: difficultyFor(lvl), tags: [c.code, c.name] },
+            },
+          },
+          upsert: true,
+        },
+      };
+    }),
+  );
+
+  const res = await Question.bulkWrite(ops, { ordered: false });
+
+  const inserted = (res.upsertedCount ?? 0);
+  const matched = (res.matchedCount ?? 0);
+  // Expecting 22 * 6 = 132 questions total after first run
+  console.log(`✅ Questions seeding complete. Inserted: ${inserted}, matched existing: ${matched}`);
+  process.exit(0);
+}
+
+run().catch((e) => {
+  console.error('Questions seed failed:', e);
+  process.exit(1);
+});
+
 ```
 
 ```javascript
