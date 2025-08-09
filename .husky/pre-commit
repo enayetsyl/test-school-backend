@@ -1,1 +1,16 @@
-npm test
+#!/usr/bin/env sh
+set -e
+
+echo "🔍 Linting staged files..."
+npx lint-staged
+
+# If any TS/TSX files are staged, run typecheck + build
+if git diff --cached --name-only | grep -E '\.(ts|tsx)$' >/dev/null; then
+  echo "🧪 Type checking..."
+  npm run typecheck --silent
+
+  echo "🏗️ Building..."
+  npm run build --silent
+else
+  echo "⏭️  No TS changes staged; skipping typecheck/build."
+fi
