@@ -28,6 +28,9 @@ const EnvSchema = z.object({
     TIME_PER_QUESTION_SECONDS: z.coerce.number().default(60),
     RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
     RATE_LIMIT_MAX: z.coerce.number().default(100),
+    SEED_ADMIN_EMAIL: z.email(),
+    SEED_ADMIN_NAME: z.string(),
+    SEED_ADMIN_PASS: z.string(),
 });
 const parsed = EnvSchema.safeParse(process.env);
 if (!parsed.success) {

@@ -1,5 +1,5 @@
 import { env, isProd } from '../config/env';
-const REFRESH_COOKIE_NAME = 'rt';
+const REFRESH_COOKIE_NAME = 'refreshToken';
 export function setRefreshCookie(res, token) {
     if (env.AUTH_REFRESH_TRANSPORT !== 'cookie')
         return;
@@ -9,7 +9,7 @@ export function setRefreshCookie(res, token) {
         httpOnly: true,
         secure: isProd,
         sameSite: 'lax',
-        path: '/api/v1/auth/token', // narrowest path that still works for refresh route
+        path: '/api/v1/auth/token',
         maxAge: sevenDaysMs,
     });
 }
@@ -25,7 +25,7 @@ export function clearRefreshCookie(res) {
 }
 export function readRefreshFromCookieOrHeader(req) {
     if (env.AUTH_REFRESH_TRANSPORT === 'cookie') {
-        return req.cookies?.rt;
+        return req.cookies?.refreshToken;
     }
     // header transport: Authorization: Bearer <refreshToken>
     const auth = req.get('authorization') ?? '';
