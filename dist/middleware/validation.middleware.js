@@ -2,6 +2,14 @@
 function isZodSchema(s) {
     return !!s && typeof s.safeParse === 'function';
 }
+function replaceContents(target, src) {
+    for (const k of Object.keys(target)) {
+        delete target[k];
+    }
+    for (const [k, v] of Object.entries(src)) {
+        target[k] = v;
+    }
+}
 /**
  * Creates an Express middleware for validating request parts
  * using a Zod schema. Returns formatted error responses on failure.
@@ -16,7 +24,13 @@ export const validate = (schema) => (req, res, next) => {
             if (!result.success) {
                 return sendZodError(res, result.error);
             }
-            req.body = result.data;
+            if (req.body && typeof req.body === 'object') {
+                replaceContents(req.body, result.data);
+            }
+            else {
+                // set when body is undefined or not an object
+                req.body = result.data;
+            }
         }
         else {
             // Multiple parts: body/query/params
@@ -25,26 +39,32 @@ export const validate = (schema) => (req, res, next) => {
                 if (!parsed.success) {
                     return sendZodError(res, parsed.error);
                 }
-                req.body = parsed.data;
+                if (req.body && typeof req.body === 'object') {
+                    replaceContents(req.body, parsed.data);
+                }
+                else {
+                    req.body = parsed.data;
+                }
             }
             if (schema.query) {
                 const parsed = schema.query.safeParse(req.query);
-                if (!parsed.success) {
+                if (!parsed.success)
                     return sendZodError(res, parsed.error);
-                }
-                req.query = parsed.data;
+                // ⚠️ Express 5: mutate, don't assign
+                replaceContents(req.query, parsed.data);
             }
             if (schema.params) {
                 const parsed = schema.params.safeParse(req.params);
-                if (!parsed.success) {
+                if (!parsed.success)
                     return sendZodError(res, parsed.error);
-                }
-                req.params = parsed.data;
+                // ⚠️ Express 5: mutate, don't assign
+                replaceContents(req.params, parsed.data);
             }
         }
         return next();
     }
-    catch {
+    catch (err) {
+        console.error('Validation middleware error:', err);
         return res.status(500).json({
             success: false,
             code: 'SERVER_ERROR',

@@ -13,6 +13,15 @@ function isZodSchema(s: unknown): s is ZodTypeAny {
   return !!s && typeof (s as ZodTypeAny).safeParse === 'function';
 }
 
+function replaceContents(target: Record<string, unknown>, src: Record<string, unknown>) {
+  for (const k of Object.keys(target)) {
+    delete (target as Record<string, unknown>)[k];
+  }
+  for (const [k, v] of Object.entries(src)) {
+    (target as Record<string, unknown>)[k] = v;
+  }
+}
+
 /**
  * Creates an Express middleware for validating request parts
  * using a Zod schema. Returns formatted error responses on failure.
@@ -28,7 +37,15 @@ export const validate =
         if (!result.success) {
           return sendZodError(res, result.error);
         }
-        req.body = result.data;
+        if (req.body && typeof req.body === 'object') {
+          replaceContents(
+            req.body as unknown as Record<string, unknown>,
+            result.data as unknown as Record<string, unknown>,
+          );
+        } else {
+          // set when body is undefined or not an object
+          (req as unknown as { body: unknown }).body = result.data as unknown;
+        }
       } else {
         // Multiple parts: body/query/params
         if (schema.body) {
@@ -36,25 +53,37 @@ export const validate =
           if (!parsed.success) {
             return sendZodError(res, parsed.error);
           }
-          req.body = parsed.data;
+          if (req.body && typeof req.body === 'object') {
+            replaceContents(
+              req.body as unknown as Record<string, unknown>,
+              parsed.data as unknown as Record<string, unknown>,
+            );
+          } else {
+            (req as unknown as { body: unknown }).body = parsed.data as unknown;
+          }
         }
         if (schema.query) {
           const parsed = schema.query.safeParse(req.query);
-          if (!parsed.success) {
-            return sendZodError(res, parsed.error);
-          }
-          req.query = parsed.data as unknown as Request['query'];
+          if (!parsed.success) return sendZodError(res, parsed.error);
+          // ⚠️ Express 5: mutate, don't assign
+          replaceContents(
+            req.query as unknown as Record<string, unknown>,
+            parsed.data as unknown as Record<string, unknown>,
+          );
         }
         if (schema.params) {
           const parsed = schema.params.safeParse(req.params);
-          if (!parsed.success) {
-            return sendZodError(res, parsed.error);
-          }
-          req.params = parsed.data as unknown as Request['params'];
+          if (!parsed.success) return sendZodError(res, parsed.error);
+          // ⚠️ Express 5: mutate, don't assign
+          replaceContents(
+            req.params as unknown as Record<string, unknown>,
+            parsed.data as unknown as Record<string, unknown>,
+          );
         }
       }
       return next();
-    } catch {
+    } catch (err) {
+      console.error('Validation middleware error:', err);
       return res.status(500).json({
         success: false,
         code: 'SERVER_ERROR',

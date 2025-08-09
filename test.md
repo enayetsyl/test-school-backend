@@ -472,7 +472,60 @@ export function publicUser(u: UserDoc) {
 ```
 
 ```javascript
-// // src/controllers/competency.controller.ts
+ // src/controllers/competency.controller.ts
+import type { Request, RequestHandler, Response } from 'express';
+import { asyncHandler } from '../utils/asyncHandler';
+import { logAudit } from '../services/audit.service';
+import {
+  listCompetencies,
+  createCompetency,
+  getCompetency,
+  updateCompetency,
+  deleteCompetency,
+} from '../services/competency.service';
+
+type IdParams = { id: string };
+
+export const listCtrl = asyncHandler(async (req: Request, res: Response) => {
+  console.log('controller', req.query)
+   const opts = {
+    ...(req.query.page ? { page: Number(req.query.page) } : {}),
+    ...(req.query.limit ? { limit: Number(req.query.limit) } : {}),
+    ...(req.query.q ? { q: String(req.query.q) } : {}),
+    ...(req.query.sortBy ? { sortBy: req.query.sortBy as 'name' | 'code' | 'createdAt' } : {}),
+    ...(req.query.sortOrder ? { sortOrder: req.query.sortOrder as 'asc' | 'desc' } : {}),
+  };
+
+  const { items, meta } = await listCompetencies(opts);
+  return res.paginated(items, meta);
+});
+
+export const createCtrl = asyncHandler(async (req, res) => {
+  const doc = await createCompetency(req.body);
+  await logAudit(req.user!.sub, 'COMPETENCY_CREATE', { type: 'Competency', id: doc._id.toString() });
+  return res.created({ competency: doc }, 'Competency created');
+});
+
+export const getCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;      // validated by your params schema
+  const c = await getCompetency(id);
+  return res.ok({ competency: c });
+});
+
+export const updateCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;
+  const c = await updateCompetency(id, req.body);
+  await logAudit(req.user!.sub, 'COMPETENCY_UPDATE', { type: 'Competency', id: c._id.toString() }, { patch: req.body });
+  return res.ok({ competency: c }, 'Updated');
+});
+
+export const deleteCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;
+  console.log('comp id', id)
+  const deleted = await deleteCompetency(id);
+  await logAudit(req.user!.sub, 'COMPETENCY_DELETE', { type: 'Competency', id });
+  return res.ok({ competency: deleted }, 'Competency deleted');
+});
 ```
 
 ```javascript
@@ -485,6 +538,179 @@ export function publicUser(u: UserDoc) {
 
 ```javascript
 // src/controllers/question.controller.ts
+import type { Request, RequestHandler, Response } from 'express';
+import multer from 'multer';
+import { asyncHandler } from '../utils/asyncHandler';
+import { logAudit } from '../services/audit.service';
+import {
+  listQuestions,
+  getQuestion,
+  createQuestion,
+  updateQuestion,
+  deleteQuestion,
+  importQuestions,
+   type ImportRow,
+} from '../services/question.service';
+import { parseCsvBuffer, sendCsv } from '../utils/csv';
+import { type Level, Question } from '../models/Question';
+
+type MulterFile = Express.Multer.File;
+
+export const listCtrl = asyncHandler(async (req: Request, res: Response) => {
+  // level: typed w/out any
+  const levelParam = typeof req.query.level === 'string' ? req.query.level.toUpperCase() : undefined;
+  const allowedLevels = new Set<Level>(['A1', 'A2', 'B1', 'B2', 'C1', 'C2']);
+  const level = levelParam && allowedLevels.has(levelParam as Level) ? (levelParam as Level) : undefined;
+
+  // isActive: robust coercion
+  const isActive =
+    typeof req.query.isActive === 'string'
+      ? req.query.isActive === 'true'
+      : typeof req.query.isActive === 'boolean'
+        ? req.query.isActive
+        : undefined;
+
+  // Build options object without undefined fields
+  const opts: Parameters<typeof listQuestions>[0] = {
+    ...(req.query.page ? { page: Number(req.query.page) } : {}),
+    ...(req.query.limit ? { limit: Number(req.query.limit) } : {}),
+    ...(req.query.q ? { q: String(req.query.q) } : {}),
+    ...(level ? { level } : {}),
+    ...(req.query.competencyId ? { competencyId: String(req.query.competencyId) } : {}),
+    ...(isActive !== undefined ? { isActive } : {}),
+    ...(req.query.sortBy ? { sortBy: req.query.sortBy as 'createdAt' | 'level' | 'prompt' } : {}),
+    ...(req.query.sortOrder ? { sortOrder: req.query.sortOrder as 'asc' | 'desc' } : {}),
+  };
+
+  const { items, meta } = await listQuestions(opts);
+  return res.paginated(items, meta);
+});
+
+
+type IdParams = { id: string };
+
+export const getCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;
+  const q = await getQuestion(id);
+  if (!q) return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Question not found' });
+  return res.ok({ question: q });
+});
+
+/** ---------- CREATE */
+export const createCtrl = asyncHandler(async (req, res) => {
+  const q = await createQuestion(req.body);
+  // If your logAudit is (actorId, action, target?, meta?), keep this:
+  await logAudit(req.user!.sub, 'QUESTION_CREATE', { type: 'Question', id: q._id.toString() });
+  // If your logAudit is (actorId, action, meta?), use:
+  // await logAudit(req.user!.sub, 'QUESTION_CREATE', { id: q._id.toString() });
+  return res.created({ question: q }, 'Question created');
+});
+
+/** ---------- UPDATE /:id */
+export const updateCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;
+  const q = await updateQuestion(id, req.body);
+
+  // match your logAudit signature (see comment above)
+  await logAudit(
+    req.user!.sub,
+    'QUESTION_UPDATE',
+    { type: 'Question', id: q._id.toString() },
+    { patch: req.body },
+  );
+  // or: await logAudit(req.user!.sub, 'QUESTION_UPDATE', { id: q._id.toString(), patch: req.body });
+
+  return res.ok({ question: q }, 'Updated');
+});
+
+/** ---------- DELETE /:id */
+export const deleteCtrl: RequestHandler<IdParams> = asyncHandler(async (req, res) => {
+  const { id } = req.params as IdParams;
+  const deleted = await deleteQuestion(id);
+  // match your logAudit signature
+  await logAudit(req.user!.sub, 'QUESTION_DELETE', { type: 'Question', id });
+  // or: await logAudit(req.user!.sub, 'QUESTION_DELETE', { id });
+  return res.ok({ question: deleted }, 'Question deleted');
+
+});
+
+/** ---------- CSV import/export **/
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+export const importMulter = upload.single('file');
+
+/** Request type that includes `file` (if you don't want global augmentation) */
+type RequestWithFile = Request & { file?: MulterFile; files?: MulterFile[] };
+
+export const importCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const file = (req as RequestWithFile).file;
+  if (!file) {
+    return res.status(400).json({ success: false, code: 'VALIDATION_ERROR', message: 'CSV file is required' });
+  }
+
+  // Remove `any`: parse rows as your service ImportRow type
+  const rows = await parseCsvBuffer<ImportRow>(file.buffer);
+  const mode = (req.query.mode as 'upsert' | 'insert') ?? 'upsert';
+
+  const result = await importQuestions(rows, mode);
+
+  // match your logAudit signature
+  await logAudit(req.user!.sub, 'QUESTION_IMPORT', undefined, { mode, ...result });
+  // or: await logAudit(req.user!.sub, 'QUESTION_IMPORT', { mode, ...result });
+
+  return res.ok(result, 'Import complete');
+});
+
+export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  // Apply same filters as list for export
+  const filter: Record<string, unknown> = {};
+  if (req.query.level) filter.level = req.query.level;
+  if (req.query.competencyId) filter.competencyId = req.query.competencyId;
+  if (req.query.isActive !== undefined) filter.isActive = req.query.isActive === 'true';
+  if (req.query.q) filter['$text'] = { $search: String(req.query.q) };
+
+  console.log('req', req.query)
+
+  // For type safety during export
+  type PopulatedQuestion = {
+    level: Level;
+    prompt: string;
+    options: string[];
+    correctIndex: number;
+    isActive: boolean;
+    competencyId?: { code?: string; name?: string };
+  };
+
+  const cursor = Question.find(filter)
+    .populate({ path: 'competencyId', select: 'code name' })
+    .cursor();
+
+  async function* toRows() {
+    for await (const doc of cursor) {
+      const d = doc.toObject() as PopulatedQuestion;
+      yield {
+        competencyCode: d.competencyId?.code,
+        level: d.level,
+        prompt: d.prompt,
+        option1: d.options?.[0],
+        option2: d.options?.[1],
+        option3: d.options?.[2],
+        option4: d.options?.[3],
+        correctIndex: d.correctIndex,
+        isActive: d.isActive,
+      };
+    }
+  }
+
+  // match your logAudit signature
+  await logAudit(req.user!.sub, 'QUESTION_EXPORT', undefined, { ...filter });
+  // or: await logAudit(req.user!.sub, 'QUESTION_EXPORT', { ...filter });
+
+  // If your sendCsv(res, filename, rows) has 3 args, keep as-is:
+  return sendCsv(res, 'questions_export.csv', toRows());
+
+  // If your sendCsv only takes (res, rows), then change to:
+  // return sendCsv(res, toRows());
+});
 ```
 
 ```javascript
@@ -661,6 +887,17 @@ function isZodSchema(s: unknown): s is ZodTypeAny {
   return !!s && typeof (s as ZodTypeAny).safeParse === 'function';
 }
 
+
+function replaceContents(target: Record<string, unknown>, src: Record<string, unknown>) {
+  for (const k of Object.keys(target)) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete (target as Record<string, unknown>)[k];
+  }
+  for (const [k, v] of Object.entries(src)) {
+    (target as Record<string, unknown>)[k] = v;
+  }
+}
+
 /**
  * Creates an Express middleware for validating request parts
  * using a Zod schema. Returns formatted error responses on failure.
@@ -668,8 +905,7 @@ function isZodSchema(s: unknown): s is ZodTypeAny {
  * @param schema Zod schema or object with keys { body, query, params }
  */
 export const validate =
-  (schema: ZodTypeAny | SchemaParts) =>
-  (req: Request, res: Response, next: NextFunction) => {
+  (schema: ZodTypeAny | SchemaParts) => (req: Request, res: Response, next: NextFunction) => {
     try {
       if (isZodSchema(schema)) {
         // Single schema → validate body
@@ -677,7 +913,15 @@ export const validate =
         if (!result.success) {
           return sendZodError(res, result.error);
         }
-        req.body = result.data;
+       if (req.body && typeof req.body === 'object') {
+          replaceContents(
+            req.body as unknown as Record<string, unknown>,
+            result.data as unknown as Record<string, unknown>,
+          );
+        } else {
+          // set when body is undefined or not an object
+          (req as unknown as { body: unknown }).body = result.data as unknown;
+        }
       } else {
         // Multiple parts: body/query/params
         if (schema.body) {
@@ -685,25 +929,37 @@ export const validate =
           if (!parsed.success) {
             return sendZodError(res, parsed.error);
           }
-          req.body = parsed.data;
+              if (req.body && typeof req.body === 'object') {
+            replaceContents(
+              req.body as unknown as Record<string, unknown>,
+              parsed.data as unknown as Record<string, unknown>,
+            );
+          } else {
+            (req as unknown as { body: unknown }).body = parsed.data as unknown;
+          }
         }
         if (schema.query) {
-          const parsed = schema.query.safeParse(req.query);
-          if (!parsed.success) {
-            return sendZodError(res, parsed.error);
-          }
-          req.query =  parsed.data as unknown as Request['query'];
+           const parsed = schema.query.safeParse(req.query);
+          if (!parsed.success) return sendZodError(res, parsed.error);
+          // ⚠️ Express 5: mutate, don't assign
+        replaceContents(
+            req.query as unknown as Record<string, unknown>,
+            parsed.data as unknown as Record<string, unknown>,
+          );
         }
         if (schema.params) {
           const parsed = schema.params.safeParse(req.params);
-          if (!parsed.success) {
-            return sendZodError(res, parsed.error);
-          }
-          req.params = parsed.data as unknown as Request['params'];
+          if (!parsed.success) return sendZodError(res, parsed.error);
+          // ⚠️ Express 5: mutate, don't assign
+            replaceContents(
+            req.params as unknown as Record<string, unknown>,
+            parsed.data as unknown as Record<string, unknown>,
+          );
         }
       }
       return next();
-    } catch  {
+    } catch (err) {
+        console.error('Validation middleware error:', err);
       return res.status(500).json({
         success: false,
         code: 'SERVER_ERROR',
@@ -735,6 +991,37 @@ function sendZodError(res: Response, error: ZodError) {
 
 ```javascript
 // src/models/AuditLog.ts
+import { Schema, model,  } from 'mongoose';
+import type { Types, Document, HydratedDocument } from 'mongoose';
+
+export interface IAuditLog extends Document {
+  _id: Types.ObjectId | string;
+  actorId: Types.ObjectId;
+  action: string; // e.g. COMPETENCY_CREATE, QUESTION_IMPORT
+  target?: { type: string; id: string };
+  meta?: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export type AuditLogDoc = HydratedDocument<IAuditLog>;
+
+const AuditLogSchema = new Schema<IAuditLog>(
+  {
+    actorId: { type: Schema.Types.ObjectId, ref: 'User', index: true, required: true },
+    action: { type: String, required: true, index: true },
+    target: {
+      type: { type: String },
+      id: { type: String },
+    },
+    meta: { type: Schema.Types.Mixed },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+
+AuditLogSchema.index({ createdAt: -1 });
+
+export const AuditLog = model<IAuditLog>('AuditLog', AuditLogSchema);
+
 ```
 
 ```javascript
@@ -820,7 +1107,7 @@ export const OtpToken = model<IOtpToken>('OtpToken', OtpTokenSchema);
 ```javascript
 // src/models/Question.ts
 import { Schema, model } from 'mongoose';
-import type { Types, HydratedDocument } from 'mongoose';
+import type { Types, HydratedDocument, InferSchemaType } from 'mongoose';
 
 export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2';
 
@@ -829,9 +1116,9 @@ export interface IQuestion extends Document {
   competencyId: Types.ObjectId;
   level: Level;
   prompt: string;
-  options: string[];       // typically 4
-  correctIndex: number;    // 0-based
-  isActive: boolean;       // default true
+  options: string[]; // typically 4
+  correctIndex: number; // 0-based
+  isActive: boolean; // default true
   meta?: {
     difficulty?: 'easy' | 'medium' | 'hard';
     tags?: string[];
@@ -840,19 +1127,29 @@ export interface IQuestion extends Document {
   updatedAt: Date;
 }
 
-export type QuestionDoc = HydratedDocument<IQuestion>;
 
-const QuestionSchema = new Schema<IQuestion>(
+
+const QuestionSchema = new Schema(
   {
     competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true, index: true },
-    level: { type: String, enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'], required: true, index: true },
+    level: {
+      type: String,
+      enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'],
+      required: true,
+      index: true,
+    },
     prompt: { type: String, required: true, trim: true, minlength: 10, maxlength: 1000 },
     options: {
       type: [String],
       required: true,
       validate: {
         validator(v: unknown[]) {
-          return Array.isArray(v) && v.length >= 2 && v.length <= 10 && v.every((s) => typeof s === 'string' && s.trim().length > 0);
+          return (
+            Array.isArray(v) &&
+            v.length >= 2 &&
+            v.length <= 10 &&
+            v.every((s) => typeof s === 'string' && s.trim().length > 0)
+          );
         },
         message: 'options must be 2–10 non-empty strings',
       },
@@ -867,24 +1164,20 @@ const QuestionSchema = new Schema<IQuestion>(
   { timestamps: true },
 );
 
-// Ensure correctIndex < options.length
-QuestionSchema.pre('validate', function (next) {
-  const self = this as IQuestion & { isModified: (p: string) => boolean };
-  if (Array.isArray(self.options) && typeof self.correctIndex === 'number') {
-    if (self.correctIndex < 0 || self.correctIndex >= self.options.length) {
-      return next(new Error('correctIndex must reference an item in options'));
-    }
-  }
-  next();
-});
-
 // One question per (competency, level) — matches your seed strategy
 QuestionSchema.index({ competencyId: 1, level: 1 }, { unique: true });
 
-// Basic text search
-QuestionSchema.index({ prompt: 'text' });
+// NOTE: InferSchemaType includes timestamps as required; make them optional for inserts.
+type _QuestionInfer = InferSchemaType<typeof QuestionSchema>;
+export type QuestionRaw = Omit<_QuestionInfer, 'createdAt' | 'updatedAt'> & {
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-export const Question = model<IQuestion>('Question', QuestionSchema);
+// (Optional) hydrated doc for elsewhere
+export type QuestionDoc = HydratedDocument<QuestionRaw>;
+
+export const Question = model<QuestionRaw>('Question', QuestionSchema);
 
 ```
 
@@ -1026,6 +1319,63 @@ export default router;
 
 ```javascript
 // src/routes/competency.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  createCtrl,
+  deleteCtrl,
+  getCtrl,
+  listCtrl,
+  updateCtrl,
+} from '../controllers/competency.controller';
+import {
+  CreateCompetencySchema,
+  UpdateCompetencySchema,
+  ListCompetencyQuery,
+  CompetencyIdParams,
+} from '../validators/competency.validators';
+
+const router = Router();
+
+router.use(requireAuth);
+
+// list (admin, supervisor)
+router.get(
+  '/',
+  (req, _res, next) => {
+    console.log('RAW URL →', req.originalUrl); // should show ?q=...&page=... if sent
+    next();
+  },
+  requireRole('admin', 'supervisor'),
+  validate({ query: ListCompetencyQuery }),
+  listCtrl,
+);
+
+// create (admin)
+router.post('/', requireRole('admin'), validate(CreateCompetencySchema), createCtrl);
+
+// get one (admin, supervisor)
+router.get(
+  '/:id',
+  requireRole('admin', 'supervisor'),
+  validate({ params: CompetencyIdParams }),
+  getCtrl,
+);
+
+// update (admin)
+router.patch(
+  '/:id',
+  requireRole('admin'),
+  validate({ params: CompetencyIdParams, body: UpdateCompetencySchema }),
+  updateCtrl,
+);
+
+// delete (admin)
+router.delete('/:id', requireRole('admin'), validate({ params: CompetencyIdParams }), deleteCtrl);
+
+export default router;
 ```
 
 ```javascript
@@ -1038,13 +1388,12 @@ export default router;
 
 ```javascript
 // src/routes/index.ts
-```
-
-```javascript
-// src/routes/question.routes.ts
 import { Router } from 'express';
+
 import authRoutes from './auth.routes';
 import userRoutes from './user.routes';
+import competencyRoutes from './competency.routes';
+import questionRoutes from './question.routes';
 
 const router = Router();
 
@@ -1052,6 +1401,73 @@ router.get('/health', (_req, res) => res.ok({ ok: true }));
 
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
+router.use('/competencies', competencyRoutes);
+router.use('/questions', questionRoutes);
+
+export default router;
+```
+
+```javascript
+// src/routes/question.routes.ts
+import { Router } from 'express';
+import { requireAuth } from '../middleware/auth.middleware';
+import { requireRole } from '../middleware/rbac.middleware';
+import { validate } from '../middleware/validation.middleware';
+import {
+  listCtrl,
+  getCtrl,
+  createCtrl,
+  updateCtrl,
+  deleteCtrl,
+  importCsvCtrl,
+  exportCsvCtrl,
+  importMulter,
+} from '../controllers/question.controller';
+import {
+  CreateQuestionSchema,
+  UpdateQuestionSchema,
+  ListQuestionQuery,
+  QuestionIdParams,
+  ImportQuery,
+} from '../validators/question.validators';
+
+const router = Router();
+
+router.use(requireAuth);
+
+// CSV import/export (admin)
+router.post(
+  '/import',
+  requireRole('admin'),
+  validate({ query: ImportQuery }),
+  importMulter,
+  importCsvCtrl,
+);
+router.get('/export', requireRole('admin'), exportCsvCtrl);
+
+// list/read (admin, supervisor)
+router.get(
+  '/',
+  requireRole('admin', 'supervisor'),
+  validate({ query: ListQuestionQuery }),
+  listCtrl,
+);
+router.get(
+  '/:id',
+  requireRole('admin', 'supervisor'),
+  validate({ params: QuestionIdParams }),
+  getCtrl,
+);
+
+// create/update/delete (admin)
+router.post('/', requireRole('admin'), validate(CreateQuestionSchema), createCtrl);
+router.patch(
+  '/:id',
+  requireRole('admin'),
+  validate({ params: QuestionIdParams, body: UpdateQuestionSchema }),
+  updateCtrl,
+);
+router.delete('/:id', requireRole('admin'), validate({ params: QuestionIdParams }), deleteCtrl);
 
 export default router;
 ```
@@ -1248,6 +1664,26 @@ run().catch((e) => {
   console.error('Questions seed failed:', e);
   process.exit(1);
 });
+
+```
+
+```javascript
+import { Types } from 'mongoose';
+import { AuditLog } from '../models/AuditLog';
+
+export async function logAudit(
+  actorId: string,
+  action: string,
+  target?: { type: string; id: string },
+  meta?: Record<string, unknown>,
+) {
+  await AuditLog.create({
+    actorId: new Types.ObjectId(actorId),
+    action,
+    target,
+    meta,
+  });
+}
 
 ```
 
@@ -1462,6 +1898,80 @@ function parseExpiryMs(v: string | number): number {
 
 ```javascript
 // src/services/competency.service.ts
+import { Competency } from '../models/Competency';
+import { Question } from '../models/Question';
+import { AppError } from '../utils/error';
+
+type ListOpts = {
+  page?: number;
+  limit?: number;
+  q?: string;
+  sortBy?: 'name' | 'code' | 'createdAt';
+  sortOrder?: 'asc' | 'desc';
+};
+
+export async function listCompetencies(opts: ListOpts) {
+  const page = Math.max(opts.page ?? 1, 1);
+  const limit = Math.min(opts.limit ?? 10, 100);
+  const skip = (page - 1) * limit;
+
+  const filter =
+    opts.q && opts.q.trim()
+      ? {
+          $or: [
+            { name: { $regex: opts.q, $options: 'i' } },
+            { code: { $regex: opts.q, $options: 'i' } },
+            { description: { $regex: opts.q, $options: 'i' } },
+          ],
+        }
+      : {};
+
+  const sort: Record<string, 1 | -1> = {
+    [opts.sortBy ?? 'createdAt']: (opts.sortOrder ?? 'desc') === 'asc' ? 1 : -1,
+  };
+
+  const [items, total] = await Promise.all([
+    Competency.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+    Competency.countDocuments(filter),
+  ]);
+
+  return { items, meta: { page, limit, total } };
+}
+
+export async function createCompetency(data: {
+  code: string;
+  name: string;
+  description?: string;
+}) {
+  const exists = await Competency.findOne({ code: data.code });
+  if (exists) throw new AppError('CONFLICT', 'Code already exists', 409);
+  return Competency.create(data);
+}
+
+export async function getCompetency(id: string) {
+  const c = await Competency.findById(id);
+  if (!c) throw new AppError('NOT_FOUND', 'Competency not found', 404);
+  return c;
+}
+
+export async function updateCompetency(id: string, data: Partial<{ code: string; name: string; description?: string }>) {
+  const c = await Competency.findByIdAndUpdate(id, data, { new: true });
+  if (!c) throw new AppError('NOT_FOUND', 'Competency not found', 404);
+  return c;
+}
+
+export async function deleteCompetency(id: string) {
+  const inUse = await Question.countDocuments({ competencyId: id });
+  console.log('inUse', inUse)
+  if (inUse > 0) {
+    throw new AppError('CONFLICT', 'Competency has questions; delete/transfer questions first', 409);
+  }
+  const res = await Competency.findByIdAndDelete(id);
+  console.log('res', res)
+  if (!res) throw new AppError('NOT_FOUND', 'Competency not found', 404);
+  return res
+}
+
 ```
 
 ```javascript
@@ -1499,6 +2009,175 @@ export async function sendResetConfirmation(to: string) {
 
 ```javascript
 // src/services/question.service.ts
+import { Types } from 'mongoose';
+import type {
+  AnyBulkWriteOperation,     // from mongoose (not mongodb)
+  UpdateQuery,               // from mongoose
+  RootFilterQuery,           // from mongoose
+} from 'mongoose';
+import { Question, type Level, type QuestionRaw } from '../models/Question';
+import { Competency } from '../models/Competency';
+import { AppError } from '../utils/error';
+
+type ListOpts = {
+  page?: number;
+  limit?: number;
+  q?: string;
+  level?: Level;
+  competencyId?: string;
+  isActive?: boolean;
+  sortBy?: 'createdAt' | 'level' | 'prompt';
+  sortOrder?: 'asc' | 'desc';
+};
+
+export async function listQuestions(opts: ListOpts) {
+  const page = Math.max(opts.page ?? 1, 1);
+  const limit = Math.min(opts.limit ?? 10, 100);
+  const skip = (page - 1) * limit;
+
+  const filter: Record<string, unknown> = {};
+  if (opts.q) filter['$text'] = { $search: opts.q };
+  if (opts.level) filter.level = opts.level;
+  if (opts.competencyId) filter.competencyId = new Types.ObjectId(opts.competencyId);
+  if (opts.isActive !== undefined) filter.isActive = opts.isActive;
+
+  const sort: Record<string, 1 | -1> = {
+    [opts.sortBy ?? 'createdAt']: (opts.sortOrder ?? 'desc') === 'asc' ? 1 : -1,
+  };
+
+  const [items, total] = await Promise.all([
+    Question.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+    Question.countDocuments(filter),
+  ]);
+
+  return { items, meta: { page, limit, total } };
+}
+
+export function getQuestion(id: string) {
+  return Question.findById(id);
+}
+
+export async function createQuestion(data: {
+  competencyId: string;
+  level: Level;
+  prompt: string;
+  options: string[];
+  correctIndex: number;
+  isActive?: boolean;
+  meta?: { difficulty?: 'easy' | 'medium' | 'hard'; tags?: string[] };
+}) {
+  try {
+    return await Question.create({
+      ...data,
+      competencyId: new Types.ObjectId(data.competencyId),
+    });
+  } catch (e: unknown) {
+    // unique index on (competencyId, level)
+    console.log(e)
+    throw new AppError('CONFLICT', 'Question for this competency and level already exists', 409);
+  }
+}
+
+export async function updateQuestion(id: string, patch: Partial<Parameters<typeof createQuestion>[0]>) {
+  const q = await Question.findByIdAndUpdate(id, patch, { new: true });
+  if (!q) throw new AppError('NOT_FOUND', 'Question not found', 404);
+  return q;
+}
+
+export async function deleteQuestion(id: string) {
+  const res = await Question.findByIdAndDelete(id);
+  if (!res) throw new AppError('NOT_FOUND', 'Question not found', 404);
+  return res;
+}
+
+export type ImportRow = {
+  competencyCode: string;
+  level: Level;
+  prompt: string;
+  option1: string;
+  option2: string;
+  option3?: string;
+  option4?: string;
+  correctIndex: string | number;
+  isActive?: string | boolean;
+};
+
+export async function importQuestions(rows: ImportRow[], mode: 'upsert' | 'insert') {
+  const codes = Array.from(new Set(rows.map((r) => r.competencyCode?.trim()))).filter(
+    (c): c is string => !!c,
+  );
+
+  const comps = await Competency.find({ code: { $in: codes } }, { _id: 1, code: 1 }).lean();
+  const codeToId = new Map(comps.map((c) => [String(c.code), String(c._id)]));
+
+// Use MONGOOSE bulk-write ops, not mongodb's
+const ops: AnyBulkWriteOperation<QuestionRaw>[] = [];
+const errors: Array<{ row: number; error: string }> = [];
+
+  rows.forEach((r, idx) => {
+    const compId = codeToId.get(r.competencyCode);
+    if (!compId) {
+      errors.push({ row: idx + 1, error: `Unknown competencyCode: ${r.competencyCode}` });
+      return;
+    }
+
+    const options = [r.option1, r.option2, r.option3, r.option4].filter(
+      (s): s is string => !!s && s.trim().length > 0,
+    );
+    const correctIndex = Number(r.correctIndex);
+    if (Number.isNaN(correctIndex) || correctIndex < 0 || correctIndex >= options.length) {
+      errors.push({ row: idx + 1, error: 'Invalid correctIndex for provided options' });
+      return;
+    }
+
+    const competencyId = new Types.ObjectId(compId);
+
+    // Mongoose filter type
+const filter: RootFilterQuery<QuestionRaw> = { competencyId, level: r.level };
+
+    const update: UpdateQuery<QuestionRaw>  = {
+      $setOnInsert: { competencyId, level: r.level },
+      $set: {
+        prompt: r.prompt,
+        options,
+        correctIndex,
+        isActive:
+          typeof r.isActive === 'string' ? r.isActive === 'true' : r.isActive ?? true,
+        meta: { tags: [r.competencyCode] },
+      },
+    };
+
+    ops.push(
+      mode === 'insert'
+        ? {
+            insertOne: {
+              document: {
+                competencyId,
+                level: r.level,
+                prompt: r.prompt,
+                options,
+                correctIndex,
+                isActive: true,
+              },
+            },
+          }
+        : { updateOne: { filter, update, upsert: true } },
+    );
+  });
+
+  let result = { inserted: 0, upserted: 0, matched: 0 };
+  if (ops.length) {
+    const res = await Question.bulkWrite(ops, { ordered: false });
+    result = {
+      inserted: res.insertedCount ?? 0,
+      upserted: res.upsertedCount ?? 0,
+      matched: res.matchedCount ?? 0,
+    };
+  }
+
+  return { ...result, errors };
+}
+
 ```
 
 ```javascript
@@ -1638,6 +2317,52 @@ export function readRefreshFromCookieOrHeader(req: Request): string | undefined 
 
 ```javascript
 // src/utils/csv.ts
+import { Readable } from 'node:stream';
+import { parse, type RowMap } from '@fast-csv/parse';
+import { format } from '@fast-csv/format';
+import type { Response } from 'express';
+
+export async function parseCsvBuffer<T = Record<string, string>>(buffer: Buffer): Promise<T[]> {
+  return new Promise<T[]>((resolve, reject) => {
+    const rows: T[] = [];
+    Readable.from(buffer)
+      .pipe(
+        parse<RowMap<string>, RowMap<string>>({
+          headers: true,
+          ignoreEmpty: true,
+          trim: true,
+        }),
+      )
+      .on('error', reject)
+      .on('data', (row: T) => rows.push(row))
+      .on('end', () => resolve(rows));
+  });
+}
+
+export async function sendCsv(
+  res: Response,
+  filename: string,
+  rows: AsyncIterable<Record<string, unknown>> | Array<Record<string, unknown>>,
+) {
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  const csv = format({ headers: true });
+  csv.pipe(res);
+
+  if (Symbol.asyncIterator in rows) {
+    for await (const row of rows as AsyncIterable<Record<string, unknown>>) {
+      csv.write(row);
+    }
+  } else {
+    for (const row of rows as Array<Record<string, unknown>>) {
+      csv.write(row);
+    }
+  }
+
+  csv.end();
+}
+
 ```
 
 ```javascript
@@ -1943,6 +2668,31 @@ export const ResetSchema = z.object({
 
 ```javascript
 // auth/validators/competency.validators.ts
+import { z } from 'zod';
+
+export const CompetencyIdParams = z.object({
+  id: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id'),
+});
+
+export const CreateCompetencySchema = z.object({
+  code: z.string().min(3).max(50),
+  name: z.string().min(2).max(150),
+  description: z.string().max(1000).optional(),
+});
+
+export const UpdateCompetencySchema = z.object({
+  code: z.string().min(3).max(50).optional(),
+  name: z.string().min(2).max(150).optional(),
+  description: z.string().max(1000).optional(),
+});
+
+export const ListCompetencyQuery = z.object({
+  page: z.coerce.number().min(1).optional(),
+  limit: z.coerce.number().min(1).max(100).optional(),
+  q: z.string().optional(),
+  sortBy: z.enum(['name', 'code', 'createdAt']).default('createdAt').optional(),
+  sortOrder: z.enum(['asc', 'desc']).default('desc').optional(),
+});
 ```
 
 ```javascript
@@ -1955,6 +2705,59 @@ export const ResetSchema = z.object({
 
 ```javascript
 // auth/validators/question.validator.ts
+import { z } from 'zod';
+
+export const LevelEnum = z.enum(['A1', 'A2', 'B1', 'B2', 'C1', 'C2']);
+
+export const QuestionIdParams = z.object({
+  id: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id'),
+});
+
+export const CreateQuestionSchema = z
+  .object({
+    competencyId: z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid competencyId'),
+    level: LevelEnum,
+    prompt: z.string().min(10).max(1000),
+    options: z.array(z.string().min(1)).min(2).max(10),
+    correctIndex: z.number().int().nonnegative(),
+    isActive: z.boolean().optional(),
+    meta: z
+      .object({
+        difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
+        tags: z.array(z.string()).optional(),
+      })
+      .optional(),
+  })
+  .refine((v) => v.correctIndex < v.options.length, {
+    message: 'correctIndex must reference an item in options',
+    path: ['correctIndex'],
+  });
+
+export const UpdateQuestionSchema = CreateQuestionSchema.partial().refine(
+  (v) => {
+    if (!v.options || v.correctIndex === undefined) return true;
+    return v.correctIndex < v.options.length;
+  },
+  { message: 'correctIndex must reference an item in options', path: ['correctIndex'] },
+);
+
+export const ListQuestionQuery = z.object({
+  page: z.coerce.number().min(1).optional(),
+  limit: z.coerce.number().min(1).max(100).optional(),
+  q: z.string().optional(),
+  level: LevelEnum.optional(),
+  competencyId: z
+    .string()
+    .regex(/^[0-9a-fA-F]{24}$/)
+    .optional(),
+  isActive: z.coerce.boolean().optional(),
+  sortBy: z.enum(['createdAt', 'level', 'prompt']).default('createdAt').optional(),
+  sortOrder: z.enum(['asc', 'desc']).default('desc').optional(),
+});
+
+export const ImportQuery = z.object({
+  mode: z.enum(['upsert', 'insert']).default('upsert').optional(),
+});
 ```
 
 ```javascript

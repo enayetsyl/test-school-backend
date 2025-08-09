@@ -1,6 +1,6 @@
 // src/models/Question.ts
 import { Schema, model } from 'mongoose';
-import type { Types, HydratedDocument } from 'mongoose';
+import type { Types, HydratedDocument, InferSchemaType } from 'mongoose';
 
 export type Level = 'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2';
 
@@ -20,9 +20,7 @@ export interface IQuestion extends Document {
   updatedAt: Date;
 }
 
-export type QuestionDoc = HydratedDocument<IQuestion>;
-
-const QuestionSchema = new Schema<IQuestion>(
+const QuestionSchema = new Schema(
   {
     competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true, index: true },
     level: {
@@ -57,21 +55,17 @@ const QuestionSchema = new Schema<IQuestion>(
   { timestamps: true },
 );
 
-// Ensure correctIndex < options.length
-QuestionSchema.pre('validate', function (next) {
-  const self = this as IQuestion & { isModified: (p: string) => boolean };
-  if (Array.isArray(self.options) && typeof self.correctIndex === 'number') {
-    if (self.correctIndex < 0 || self.correctIndex >= self.options.length) {
-      return next(new Error('correctIndex must reference an item in options'));
-    }
-  }
-  next();
-});
-
 // One question per (competency, level) — matches your seed strategy
 QuestionSchema.index({ competencyId: 1, level: 1 }, { unique: true });
 
-// Basic text search
-QuestionSchema.index({ prompt: 'text' });
+// NOTE: InferSchemaType includes timestamps as required; make them optional for inserts.
+type _QuestionInfer = InferSchemaType<typeof QuestionSchema>;
+export type QuestionRaw = Omit<_QuestionInfer, 'createdAt' | 'updatedAt'> & {
+  createdAt?: Date;
+  updatedAt?: Date;
+};
 
-export const Question = model<IQuestion>('Question', QuestionSchema);
+// (Optional) hydrated doc for elsewhere
+export type QuestionDoc = HydratedDocument<QuestionRaw>;
+
+export const Question = model<QuestionRaw>('Question', QuestionSchema);
