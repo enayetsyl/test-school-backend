@@ -8,6 +8,7 @@ import {
   submitExam,
   getSessionStatus,
   recordViolation,
+  getLatestResultForUser,
 } from '../services/exam.service';
 import { type ViolationType } from '../models/ExamSession';
 import {
@@ -123,4 +124,11 @@ export const violationCtrl: RequestHandler = asyncHandler(async (req, res) => {
   emitSessionViolation(sessionId, { type, occurredAt: new Date().toISOString() });
 
   return sendOk(res, out, 'Violation recorded');
+});
+
+export const latestResultCtrl: RequestHandler = asyncHandler(async (req, res) => {
+  const userId = req.user!.sub;
+  const out = await getLatestResultForUser({ userId });
+  // Return null when nothing found (consistent with cert API style)
+  return sendOk(res, { latest: out }, 'Latest exam result');
 });

@@ -36,7 +36,24 @@ export async function listQuestions(opts: ListOpts) {
   };
 
   const [items, total] = await Promise.all([
-    Question.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+    Question.find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .populate({ path: 'competencyId', select: 'name' })
+      .lean<
+        {
+          _id: Types.ObjectId;
+          competencyId: { _id: Types.ObjectId; name: string } | Types.ObjectId;
+          level: Level;
+          prompt: string;
+          options: string[];
+          correctIndex: number;
+          isActive: boolean;
+          createdAt: Date;
+          updatedAt: Date;
+        }[]
+      >(),
     Question.countDocuments(filter),
   ]);
 

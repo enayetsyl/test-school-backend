@@ -23,8 +23,8 @@ interface UserLite {
 type SessionStatus = 'pending' | 'active' | 'submitted' | 'cancelled';
 
 interface SessionListItem {
-  _id: string;
-  user: UserLite | null; // populated minimal user
+  _id: mongoose.Types.ObjectId | string;
+  userId?: UserLite;
   step: 1 | 2 | 3;
   status: SessionStatus;
   score?: number;
@@ -56,11 +56,14 @@ export const listSessionsCtrl: RequestHandler = async (req, res) => {
   const { page, limit, q, status, step, userId, from, to } =
     req.query as unknown as ListSessionsQueryType;
 
+  // ---- Coerce query params
+  const pageNum = Number(page) > 0 ? Number(page) : 1;
+  const lim = Number(limit) > 0 ? Number(limit) : 20;
+  const stepNum = step !== undefined ? Number(step) : undefined;
+
   const filter: SessionFilter = {};
   if (status) filter.status = status;
-  if (step !== undefined && isStep(step)) {
-    filter.step = step; // now typed as 1 | 2 | 3 ✅
-  }
+  if (stepNum !== undefined && isStep(stepNum)) filter.step = stepNum;
   if (userId) filter.user = new mongoose.Types.ObjectId(userId);
   if (from || to) {
     const range: DateRange = {};
@@ -69,8 +72,6 @@ export const listSessionsCtrl: RequestHandler = async (req, res) => {
     filter.startedAt = range;
   }
 
-  const pageNum = page ?? 1;
-  const lim = limit ?? 20;
   const skip = (pageNum - 1) * lim;
 
   const query = ExamSession.find(filter)
@@ -78,21 +79,24 @@ export const listSessionsCtrl: RequestHandler = async (req, res) => {
     .skip(skip)
     .limit(lim)
     .select('_id user step status score startedAt submittedAt violationsCount videoRecordingMeta')
-    .populate({ path: 'user', select: 'name email role' });
+    .populate({ path: 'userId', select: 'name email role', model: 'User' });
 
   const [items, total] = await Promise.all([
     query.lean<SessionListItem[]>(),
     ExamSession.countDocuments(filter),
   ]);
 
-  const text = q?.toLowerCase();
-  const data = text
-    ? items.filter((it) => {
-        const name = it.user?.name?.toLowerCase() ?? '';
-        const email = it.user?.email?.toLowerCase() ?? '';
-        return name.includes(text) || email.includes(text);
-      })
-    : items;
+  // ---- Text search on _id, userId.name, userId.email
+  const needle = (q ?? '').toLowerCase().trim();
+  const data: SessionListItem[] =
+    needle.length > 0
+      ? items.filter((it) => {
+          const idStr = String(it._id ?? '').toLowerCase();
+          const name = (it.userId?.name ?? '').toLowerCase();
+          const email = (it.userId?.email ?? '').toLowerCase();
+          return idStr.includes(needle) || name.includes(needle) || email.includes(needle);
+        })
+      : items;
 
   return res.json({
     success: true,

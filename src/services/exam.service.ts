@@ -25,6 +25,16 @@ export type SubmitExamResult = {
   already?: true; // <-- returned if user tries to submit a non-active session
 };
 
+export type LatestResult = {
+  sessionId: string;
+  step: 1 | 2 | 3;
+  status: Exclude<SessionStatus, 'active'>; // 'submitted' | 'expired' | 'abandoned'
+  scorePct?: number;
+  awardedLevel?: Level;
+  proceedNext: boolean;
+  submittedAt: string; // ISO (prefers endAt, then updatedAt/createdAt)
+};
+
 function levelsForStep(step: 1 | 2 | 3) {
   if (step === 1) return ['A1', 'A2'] as const;
   if (step === 2) return ['B1', 'B2'] as const;
@@ -312,4 +322,46 @@ export async function getSessionStatus(params: { userId: string; sessionId: stri
     scorePct: session.scorePct,
     awardedLevel: session.awardedLevel,
   };
+}
+
+export async function getLatestResultForUser(params: {
+  userId: string;
+}): Promise<LatestResult | null> {
+  const { userId } = params;
+
+  // Find the most recent non-active session
+  const session = await ExamSession.findOne({
+    userId,
+    status: { $in: ['submitted', 'expired', 'abandoned'] },
+  })
+    .sort({ endAt: -1, updatedAt: -1, createdAt: -1 })
+    .lean();
+
+  if (!session) return null;
+
+  // Compute proceedNext consistently with submitExam
+  let proceedNext = false;
+  if (
+    (session.status === 'submitted' || session.status === 'expired') &&
+    typeof session.scorePct === 'number'
+  ) {
+    const mapped = mapScoreToLevel(session.step as 1 | 2 | 3, session.scorePct);
+    proceedNext = !!mapped.proceedNext;
+  }
+
+  const submittedAt =
+    (session.endAt ?? session.updatedAt ?? session.createdAt).toISOString?.() ??
+    String(session.endAt ?? session.updatedAt ?? session.createdAt);
+
+  const out: LatestResult = {
+    sessionId: String(session._id),
+    step: session.step as 1 | 2 | 3,
+    status: session.status as Exclude<SessionStatus, 'active'>,
+    ...(typeof session.scorePct === 'number' ? { scorePct: session.scorePct } : {}),
+    ...(session.awardedLevel ? { awardedLevel: session.awardedLevel as Level } : {}),
+    proceedNext,
+    submittedAt,
+  };
+
+  return out;
 }

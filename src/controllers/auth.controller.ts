@@ -69,7 +69,9 @@ export const forgot = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const reset = asyncHandler(async (req: Request, res: Response) => {
-  await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+  console.log('req.body', req.body);
+  const rest = await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+  console.log('reset password', rest);
   return sendOk(res, { reset: true }, 'Password reset successful. Please login.');
 });
 

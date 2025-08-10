@@ -38,13 +38,13 @@ router.get('/export', requireRole('admin'), exportCsvCtrl);
 // list/read (admin, supervisor)
 router.get(
   '/',
-  requireRole('admin', 'supervisor'),
+  requireRole('admin', 'supervisor', 'student'),
   validate({ query: ListQuestionQuery }),
   listCtrl,
 );
 router.get(
   '/:id',
-  requireRole('admin', 'supervisor'),
+  requireRole('admin', 'supervisor', 'student'),
   validate({ params: QuestionIdParams }),
   getCtrl,
 );

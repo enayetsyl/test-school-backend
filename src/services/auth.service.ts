@@ -128,6 +128,8 @@ export async function verifyOtp(email: string, otp: string, purpose: 'verify' | 
   const user = await User.findOne({ email });
   if (!user) throw new AppError('NOT_FOUND', 'User not found', 404);
 
+  console.log('email otp purpose', email, otp, purpose);
+
   const record = await OtpToken.findOne({
     userId: user._id,
     purpose,
@@ -135,6 +137,7 @@ export async function verifyOtp(email: string, otp: string, purpose: 'verify' | 
     expiresAt: { $gt: new Date() },
   }).sort({ createdAt: -1 });
 
+  console.log('record', record);
   if (!record) throw new AppError('UNAUTHORIZED', 'OTP expired or not found', 401);
 
   const ok = await comparePassword(otp, record.otpHash);
