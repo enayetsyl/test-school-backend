@@ -39,16 +39,16 @@ const DEFAULT_ROUNDS = 10;
 // Lazy-load bcrypt with fallback to bcryptjs (no top-level await)
 const libPromise = (async () => {
     try {
-        const mod = await Promise.resolve().then(() => __importStar(require("bcrypt")));
+        const mod = await Promise.resolve().then(() => __importStar(require('bcrypt')));
         return mod;
     }
     catch {
         try {
-            const mod = await Promise.resolve().then(() => __importStar(require("bcryptjs")));
+            const mod = await Promise.resolve().then(() => __importStar(require('bcryptjs')));
             return mod;
         }
         catch {
-            throw new Error("No bcrypt/bcryptjs available. Please install at least one.");
+            throw new Error('No bcrypt/bcryptjs available. Please install at least one.');
         }
     }
 })();
