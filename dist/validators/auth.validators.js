@@ -13,7 +13,7 @@ exports.LoginSchema = zod_1.z.object({
     password: zod_1.z.string().min(8).max(100),
 });
 exports.RefreshSchema = zod_1.z.union([zod_1.z.object({}), zod_1.z.undefined()]).transform(() => ({}));
-exports.LogoutSchema = zod_1.z.object({}); // nothing needed
+exports.LogoutSchema = zod_1.z.object({}).strict().optional();
 exports.SendOtpSchema = zod_1.z.object({
     email: zod_1.z.email(),
     purpose: zod_1.z.enum(['verify', 'reset']),
