@@ -14,7 +14,7 @@ export const LoginSchema = z.object({
 
 export const RefreshSchema = z.union([z.object({}), z.undefined()]).transform(() => ({}));
 
-export const LogoutSchema = z.object({}); // nothing needed
+export const LogoutSchema = z.object({}).strict().optional();
 
 export const SendOtpSchema = z.object({
   email: z.email(),
