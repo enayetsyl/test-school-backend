@@ -1,4 +1,7 @@
-export function respondMiddleware(_req, res, next) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.respondMiddleware = respondMiddleware;
+function respondMiddleware(_req, res, next) {
     res.ok = function (data, message, meta) {
         return this.status(200).json({
             success: true,

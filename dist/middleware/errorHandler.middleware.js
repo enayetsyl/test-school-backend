@@ -1,12 +1,15 @@
-import { AppError, toErrorResponse } from '../utils/error';
-import { ZodError } from 'zod';
-export function errorHandler(err, _req, res, _next) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.errorHandler = errorHandler;
+const error_1 = require("../utils/error");
+const zod_1 = require("zod");
+function errorHandler(err, _req, res, _next) {
     void _next;
-    if (err instanceof AppError) {
-        return res.status(err.status).json(toErrorResponse(err));
+    if (err instanceof error_1.AppError) {
+        return res.status(err.status).json((0, error_1.toErrorResponse)(err));
     }
     // Zod errors (for validators) – keep it brief; expand if you like
-    if (err instanceof ZodError) {
+    if (err instanceof zod_1.ZodError) {
         return res.status(400).json({
             success: false,
             code: 'VALIDATION_ERROR',

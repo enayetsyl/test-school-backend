@@ -1,6 +1,8 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 // src/seed/seedCompetencies.ts
-import { connectDB } from '../config/db';
-import { Competency } from '../models/Competency'; // expects fields: code (unique), name, description?
+const db_1 = require("../config/db");
+const Competency_1 = require("../models/Competency"); // expects fields: code (unique), name, description?
 const COMPETENCIES = [
     { code: 'COMP-01', name: 'Email Security' },
     { code: 'COMP-02', name: 'Password Management' },
@@ -26,7 +28,7 @@ const COMPETENCIES = [
     { code: 'COMP-22', name: 'Incident Reporting' },
 ];
 async function run() {
-    await connectDB();
+    await (0, db_1.connectDB)();
     const ops = COMPETENCIES.map((c) => ({
         updateOne: {
             filter: { code: c.code },
@@ -40,7 +42,7 @@ async function run() {
             upsert: true,
         },
     }));
-    const res = await Competency.bulkWrite(ops, { ordered: false });
+    const res = await Competency_1.Competency.bulkWrite(ops, { ordered: false });
     const inserted = res.upsertedCount ?? 0;
     const matched = res.matchedCount ?? 0;
     console.log(`✅ Competencies seeding complete. Inserted: ${inserted}, matched existing: ${matched}`);

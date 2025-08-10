@@ -1,3 +1,6 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.validate = void 0;
 // Narrower and eslint-safe check (no `any`)
 function isZodSchema(s) {
     return !!s && typeof s.safeParse === 'function';
@@ -16,7 +19,7 @@ function replaceContents(target, src) {
  *
  * @param schema Zod schema or object with keys { body, query, params }
  */
-export const validate = (schema) => (req, res, next) => {
+const validate = (schema) => (req, res, next) => {
     try {
         if (isZodSchema(schema)) {
             // Single schema → validate body
@@ -72,6 +75,7 @@ export const validate = (schema) => (req, res, next) => {
         });
     }
 };
+exports.validate = validate;
 /**
  * Maps ZodError to the API error format defined in project rules.
  */

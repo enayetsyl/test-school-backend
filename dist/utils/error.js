@@ -1,5 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AppError = void 0;
+exports.toErrorResponse = toErrorResponse;
 // src/utils/error.ts
-export class AppError extends Error {
+class AppError extends Error {
     constructor(code, message, status = 400, details) {
         super(message);
         this.code = code;
@@ -7,7 +11,8 @@ export class AppError extends Error {
         this.details = details;
     }
 }
-export function toErrorResponse(err) {
+exports.AppError = AppError;
+function toErrorResponse(err) {
     if (err instanceof AppError) {
         return { success: false, code: err.code, message: err.message, details: err.details };
     }

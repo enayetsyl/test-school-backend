@@ -1,13 +1,16 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ListAuditQuery = exports.ListAuditQuerySchema = void 0;
 // validators/admin.audit.validators.ts
-import { z } from 'zod';
-export const ListAuditQuerySchema = z.object({
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
-    actorId: z.string().optional(),
-    action: z.string().trim().optional(),
-    resource: z.string().trim().optional(),
-    from: z.coerce.date().optional(),
-    to: z.coerce.date().optional(),
-    q: z.string().trim().optional(),
+const zod_1 = require("zod");
+exports.ListAuditQuerySchema = zod_1.z.object({
+    page: zod_1.z.coerce.number().int().min(1).default(1),
+    limit: zod_1.z.coerce.number().int().min(1).max(100).default(20),
+    actorId: zod_1.z.string().optional(),
+    action: zod_1.z.string().trim().optional(),
+    resource: zod_1.z.string().trim().optional(),
+    from: zod_1.z.coerce.date().optional(),
+    to: zod_1.z.coerce.date().optional(),
+    q: zod_1.z.string().trim().optional(),
 });
-export const ListAuditQuery = { query: ListAuditQuerySchema };
+exports.ListAuditQuery = { query: exports.ListAuditQuerySchema };

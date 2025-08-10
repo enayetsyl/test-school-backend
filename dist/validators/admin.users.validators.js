@@ -1,31 +1,34 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ListUsersQuery = exports.ListUsersQuerySchema = exports.UpdateUserSchema = exports.CreateUserSchema = exports.UserIdParams = void 0;
 // validators/admin.user.validators.ts
-import { z } from 'zod';
-export const UserIdParams = {
-    params: z.object({ id: z.string().min(1) }),
+const zod_1 = require("zod");
+exports.UserIdParams = {
+    params: zod_1.z.object({ id: zod_1.z.string().min(1) }),
 };
-export const CreateUserSchema = {
-    body: z.object({
-        name: z.string().trim().min(1),
-        email: z.string().email(),
-        role: z.enum(['admin', 'student', 'supervisor']),
-        password: z.string().min(8), // require explicit password
+exports.CreateUserSchema = {
+    body: zod_1.z.object({
+        name: zod_1.z.string().trim().min(1),
+        email: zod_1.z.string().email(),
+        role: zod_1.z.enum(['admin', 'student', 'supervisor']),
+        password: zod_1.z.string().min(8), // require explicit password
     }),
 };
-export const UpdateUserSchema = {
-    body: z
+exports.UpdateUserSchema = {
+    body: zod_1.z
         .object({
-        name: z.string().trim().min(1).optional(),
-        role: z.enum(['admin', 'student', 'supervisor']).optional(),
-        status: z.enum(['active', 'disabled']).optional(),
-        password: z.string().min(8).optional(),
+        name: zod_1.z.string().trim().min(1).optional(),
+        role: zod_1.z.enum(['admin', 'student', 'supervisor']).optional(),
+        status: zod_1.z.enum(['active', 'disabled']).optional(),
+        password: zod_1.z.string().min(8).optional(),
     })
         .refine((b) => Object.keys(b).length > 0, { message: 'Provide at least one field.' }),
 };
-export const ListUsersQuerySchema = z.object({
-    page: z.coerce.number().int().min(1).default(1),
-    limit: z.coerce.number().int().min(1).max(100).default(20),
-    q: z.string().trim().optional(),
-    role: z.enum(['admin', 'student', 'supervisor']).optional(),
-    status: z.enum(['active', 'disabled']).optional(),
+exports.ListUsersQuerySchema = zod_1.z.object({
+    page: zod_1.z.coerce.number().int().min(1).default(1),
+    limit: zod_1.z.coerce.number().int().min(1).max(100).default(20),
+    q: zod_1.z.string().trim().optional(),
+    role: zod_1.z.enum(['admin', 'student', 'supervisor']).optional(),
+    status: zod_1.z.enum(['active', 'disabled']).optional(),
 });
-export const ListUsersQuery = { query: ListUsersQuerySchema };
+exports.ListUsersQuery = { query: exports.ListUsersQuerySchema };

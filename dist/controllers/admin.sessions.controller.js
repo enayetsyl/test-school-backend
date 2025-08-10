@@ -1,9 +1,15 @@
-import mongoose from 'mongoose';
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getSessionCtrl = exports.listSessionsCtrl = void 0;
+const mongoose_1 = __importDefault(require("mongoose"));
 // If you have a concrete model file, import it directly:
-import { model } from 'mongoose';
-const ExamSession = model('ExamSession');
+const mongoose_2 = require("mongoose");
+const ExamSession = (0, mongoose_2.model)('ExamSession');
 const isStep = (v) => v === 1 || v === 2 || v === 3;
-export const listSessionsCtrl = async (req, res) => {
+const listSessionsCtrl = async (req, res) => {
     const { page, limit, q, status, step, userId, from, to } = req.query;
     // ---- Coerce query params
     const pageNum = Number(page) > 0 ? Number(page) : 1;
@@ -15,7 +21,7 @@ export const listSessionsCtrl = async (req, res) => {
     if (stepNum !== undefined && isStep(stepNum))
         filter.step = stepNum;
     if (userId)
-        filter.user = new mongoose.Types.ObjectId(userId);
+        filter.user = new mongoose_1.default.Types.ObjectId(userId);
     if (from || to) {
         const range = {};
         if (from)
@@ -56,7 +62,8 @@ export const listSessionsCtrl = async (req, res) => {
         data,
     });
 };
-export const getSessionCtrl = async (req, res) => {
+exports.listSessionsCtrl = listSessionsCtrl;
+const getSessionCtrl = async (req, res) => {
     const { id } = req.params;
     const doc = await ExamSession.findById(id)
         .populate({ path: 'user', select: 'name email role' })
@@ -66,3 +73,4 @@ export const getSessionCtrl = async (req, res) => {
         return res.status(404).json({ success: false, message: 'Session not found' });
     return res.json({ success: true, data: doc });
 };
+exports.getSessionCtrl = getSessionCtrl;

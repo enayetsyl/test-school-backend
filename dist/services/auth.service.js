@@ -1,24 +1,39 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.registerUser = registerUser;
+exports.loginUser = loginUser;
+exports.issueTokens = issueTokens;
+exports.rotateRefreshToken = rotateRefreshToken;
+exports.logoutUser = logoutUser;
+exports.issueOtp = issueOtp;
+exports.sendOtp = sendOtp;
+exports.verifyOtp = verifyOtp;
+exports.forgotPassword = forgotPassword;
+exports.resetPassword = resetPassword;
 // src/services/auth.service.ts
-import crypto from 'node:crypto';
-import { Types } from 'mongoose';
-import { User } from '../models/User';
-import { OtpToken } from '../models/OtpToken';
-import { RefreshToken } from '../models/RefreshToken';
-import { hashPassword, comparePassword } from '../utils/hasher';
-import { signAccessToken, signRefreshToken, verifyRefreshToken, } from '../utils/jwt';
-import { sendOtpEmail, sendResetConfirmation } from './mailer.service';
-import { AppError } from '../utils/error';
-import { env } from '../config/env';
+const node_crypto_1 = __importDefault(require("node:crypto"));
+const mongoose_1 = require("mongoose");
+const User_1 = require("../models/User");
+const OtpToken_1 = require("../models/OtpToken");
+const RefreshToken_1 = require("../models/RefreshToken");
+const hasher_1 = require("../utils/hasher");
+const jwt_1 = require("../utils/jwt");
+const mailer_service_1 = require("./mailer.service");
+const error_1 = require("../utils/error");
+const env_1 = require("../config/env");
 function hashRefreshForDB(token) {
     // Use a fast, one-way hash for DB storage (not bcrypt – we just need lookup)
-    return crypto.createHash('sha256').update(token).digest('hex');
+    return node_crypto_1.default.createHash('sha256').update(token).digest('hex');
 }
-export async function registerUser(params) {
-    const exists = await User.findOne({ email: params.email });
+async function registerUser(params) {
+    const exists = await User_1.User.findOne({ email: params.email });
     if (exists)
-        throw new AppError('CONFLICT', 'Email already registered', 409);
-    const passwordHash = await hashPassword(params.password);
-    const user = await User.create({
+        throw new error_1.AppError('CONFLICT', 'Email already registered', 409);
+    const passwordHash = await (0, hasher_1.hashPassword)(params.password);
+    const user = await User_1.User.create({
         name: params.name,
         email: params.email,
         passwordHash,
@@ -28,63 +43,63 @@ export async function registerUser(params) {
     });
     // send verification OTP (optional)
     const otp = await issueOtp(user._id.toString(), 'verify');
-    await sendOtpEmail(user.email, otp, 'verify');
+    await (0, mailer_service_1.sendOtpEmail)(user.email, otp, 'verify');
     return user;
 }
-export async function loginUser(params) {
-    const user = await User.findOne({ email: params.email });
+async function loginUser(params) {
+    const user = await User_1.User.findOne({ email: params.email });
     if (!user)
-        throw new AppError('UNAUTHORIZED', 'Invalid credentials', 401);
+        throw new error_1.AppError('UNAUTHORIZED', 'Invalid credentials', 401);
     if (user.status !== 'active')
-        throw new AppError('FORBIDDEN', 'Account disabled', 403);
-    const ok = await comparePassword(params.password, user.passwordHash);
+        throw new error_1.AppError('FORBIDDEN', 'Account disabled', 403);
+    const ok = await (0, hasher_1.comparePassword)(params.password, user.passwordHash);
     if (!ok)
-        throw new AppError('UNAUTHORIZED', 'Invalid credentials', 401);
+        throw new error_1.AppError('UNAUTHORIZED', 'Invalid credentials', 401);
     const tokens = await issueTokens(user._id.toString(), user.role);
     return { user, ...tokens };
 }
-export async function issueTokens(userId, role) {
-    const jti = crypto.randomUUID();
-    const access = signAccessToken({ sub: userId, role, jti });
-    const refreshJti = crypto.randomUUID();
-    const refresh = signRefreshToken({ sub: userId, jti: refreshJti });
+async function issueTokens(userId, role) {
+    const jti = node_crypto_1.default.randomUUID();
+    const access = (0, jwt_1.signAccessToken)({ sub: userId, role, jti });
+    const refreshJti = node_crypto_1.default.randomUUID();
+    const refresh = (0, jwt_1.signRefreshToken)({ sub: userId, jti: refreshJti });
     const tokenHash = hashRefreshForDB(refresh);
-    const expiresAt = new Date(Date.now() + parseExpiryMs(env.JWT_REFRESH_EXPIRES_IN));
-    await RefreshToken.create({
-        userId: new Types.ObjectId(userId),
+    const expiresAt = new Date(Date.now() + parseExpiryMs(env_1.env.JWT_REFRESH_EXPIRES_IN));
+    await RefreshToken_1.RefreshToken.create({
+        userId: new mongoose_1.Types.ObjectId(userId),
         tokenHash,
         expiresAt,
     });
     return { accessToken: access, refreshToken: refresh };
 }
-export async function rotateRefreshToken(rawToken) {
-    const decoded = verifyRefreshToken(rawToken); // throws if invalid or wrong typ
+async function rotateRefreshToken(rawToken) {
+    const decoded = (0, jwt_1.verifyRefreshToken)(rawToken); // throws if invalid or wrong typ
     const tokenHash = hashRefreshForDB(rawToken);
     // Check not revoked/expired in DB
-    const doc = await RefreshToken.findOne({ userId: decoded.sub, tokenHash });
+    const doc = await RefreshToken_1.RefreshToken.findOne({ userId: decoded.sub, tokenHash });
     if (!doc || doc.revokedAt || doc.expiresAt < new Date()) {
-        throw new AppError('UNAUTHORIZED', 'Invalid refresh token', 401);
+        throw new error_1.AppError('UNAUTHORIZED', 'Invalid refresh token', 401);
     }
     // Revoke old & issue new pair
     doc.revokedAt = new Date();
     await doc.save();
-    const user = await User.findById(decoded.sub);
+    const user = await User_1.User.findById(decoded.sub);
     if (!user)
-        throw new AppError('UNAUTHORIZED', 'User not found', 401);
+        throw new error_1.AppError('UNAUTHORIZED', 'User not found', 401);
     return issueTokens(user._id.toString(), user.role);
 }
-export async function logoutUser(rawToken) {
+async function logoutUser(rawToken) {
     if (!rawToken)
         return;
     const tokenHash = hashRefreshForDB(rawToken);
-    await RefreshToken.updateMany({ tokenHash, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
+    await RefreshToken_1.RefreshToken.updateMany({ tokenHash, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
 }
-export async function issueOtp(userId, purpose) {
+async function issueOtp(userId, purpose) {
     const otp = generateOtp(6);
-    const otpHash = await hashPassword(otp, 10);
+    const otpHash = await (0, hasher_1.hashPassword)(otp, 10);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
-    await OtpToken.create({
-        userId: new Types.ObjectId(userId),
+    await OtpToken_1.OtpToken.create({
+        userId: new mongoose_1.Types.ObjectId(userId),
         channel: 'email',
         otpHash,
         purpose,
@@ -92,20 +107,20 @@ export async function issueOtp(userId, purpose) {
     });
     return otp;
 }
-export async function sendOtp(email, purpose) {
-    const user = await User.findOne({ email });
+async function sendOtp(email, purpose) {
+    const user = await User_1.User.findOne({ email });
     if (!user)
-        throw new AppError('NOT_FOUND', 'User not found', 404);
+        throw new error_1.AppError('NOT_FOUND', 'User not found', 404);
     const otp = await issueOtp(user._id.toString(), purpose);
-    await sendOtpEmail(user.email, otp, purpose);
+    await (0, mailer_service_1.sendOtpEmail)(user.email, otp, purpose);
     return { sent: true };
 }
-export async function verifyOtp(email, otp, purpose) {
-    const user = await User.findOne({ email });
+async function verifyOtp(email, otp, purpose) {
+    const user = await User_1.User.findOne({ email });
     if (!user)
-        throw new AppError('NOT_FOUND', 'User not found', 404);
+        throw new error_1.AppError('NOT_FOUND', 'User not found', 404);
     console.log('email otp purpose', email, otp, purpose);
-    const record = await OtpToken.findOne({
+    const record = await OtpToken_1.OtpToken.findOne({
         userId: user._id,
         purpose,
         consumedAt: { $exists: false },
@@ -113,10 +128,10 @@ export async function verifyOtp(email, otp, purpose) {
     }).sort({ createdAt: -1 });
     console.log('record', record);
     if (!record)
-        throw new AppError('UNAUTHORIZED', 'OTP expired or not found', 401);
-    const ok = await comparePassword(otp, record.otpHash);
+        throw new error_1.AppError('UNAUTHORIZED', 'OTP expired or not found', 401);
+    const ok = await (0, hasher_1.comparePassword)(otp, record.otpHash);
     if (!ok)
-        throw new AppError('UNAUTHORIZED', 'Invalid OTP', 401);
+        throw new error_1.AppError('UNAUTHORIZED', 'Invalid OTP', 401);
     record.consumedAt = new Date();
     await record.save();
     if (purpose === 'verify') {
@@ -125,32 +140,32 @@ export async function verifyOtp(email, otp, purpose) {
     }
     return { verified: true };
 }
-export async function forgotPassword(email) {
-    const user = await User.findOne({ email });
+async function forgotPassword(email) {
+    const user = await User_1.User.findOne({ email });
     if (!user)
         return { sent: true }; // do not leak existence
     const otp = await issueOtp(user._id.toString(), 'reset');
-    await sendOtpEmail(user.email, otp, 'reset');
+    await (0, mailer_service_1.sendOtpEmail)(user.email, otp, 'reset');
     return { sent: true };
 }
-export async function resetPassword(email, otp, newPassword) {
-    const user = await User.findOne({ email });
+async function resetPassword(email, otp, newPassword) {
+    const user = await User_1.User.findOne({ email });
     if (!user)
-        throw new AppError('NOT_FOUND', 'User not found', 404);
+        throw new error_1.AppError('NOT_FOUND', 'User not found', 404);
     // verify OTP with purpose reset
     const res = await verifyOtp(email, otp, 'reset');
     if (!res.verified)
-        throw new AppError('UNAUTHORIZED', 'Invalid OTP', 401);
-    const passwordHash = await hashPassword(newPassword);
+        throw new error_1.AppError('UNAUTHORIZED', 'Invalid OTP', 401);
+    const passwordHash = await (0, hasher_1.hashPassword)(newPassword);
     user.passwordHash = passwordHash;
     await user.save();
     // revoke all refresh tokens
-    await RefreshToken.updateMany({ userId: user._id, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
-    await sendResetConfirmation(user.email);
+    await RefreshToken_1.RefreshToken.updateMany({ userId: user._id, revokedAt: { $exists: false } }, { $set: { revokedAt: new Date() } });
+    await (0, mailer_service_1.sendResetConfirmation)(user.email);
     return { reset: true };
 }
 function generateOtp(len) {
-    const bytes = crypto.randomBytes(len);
+    const bytes = node_crypto_1.default.randomBytes(len);
     return Array.from(bytes, (b) => (b % 10).toString()).join('');
 }
 function parseExpiryMs(v) {

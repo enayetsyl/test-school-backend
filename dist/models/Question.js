@@ -1,7 +1,10 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Question = void 0;
 // src/models/Question.ts
-import { Schema, model } from 'mongoose';
-const QuestionSchema = new Schema({
-    competencyId: { type: Schema.Types.ObjectId, ref: 'Competency', required: true, index: true },
+const mongoose_1 = require("mongoose");
+const QuestionSchema = new mongoose_1.Schema({
+    competencyId: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Competency', required: true, index: true },
     level: {
         type: String,
         enum: ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'],
@@ -31,4 +34,4 @@ const QuestionSchema = new Schema({
 }, { timestamps: true });
 // One question per (competency, level) — matches your seed strategy
 QuestionSchema.index({ competencyId: 1, level: 1 }, { unique: true });
-export const Question = model('Question', QuestionSchema);
+exports.Question = (0, mongoose_1.model)('Question', QuestionSchema);

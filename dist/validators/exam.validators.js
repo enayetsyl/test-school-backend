@@ -1,32 +1,35 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.UploadChunkQuery = exports.SessionIdParams = exports.ViolationBody = exports.SubmitBody = exports.AnswerBody = exports.StartExamBody = exports.StartExamQuery = exports.ObjectId = void 0;
 // validators/exam.validators.ts
-import { z } from 'zod';
-export const ObjectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
-export const StartExamQuery = z.object({
-    step: z.coerce.number().int().min(1).max(3),
+const zod_1 = require("zod");
+exports.ObjectId = zod_1.z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
+exports.StartExamQuery = zod_1.z.object({
+    step: zod_1.z.coerce.number().int().min(1).max(3),
 });
-export const StartExamBody = z.object({
-    screen: z
-        .object({ width: z.number().int().positive(), height: z.number().int().positive() })
+exports.StartExamBody = zod_1.z.object({
+    screen: zod_1.z
+        .object({ width: zod_1.z.number().int().positive(), height: zod_1.z.number().int().positive() })
         .optional(),
 });
-export const AnswerBody = z.object({
-    sessionId: ObjectId,
-    questionId: ObjectId,
-    selectedIndex: z.number().int().min(0),
-    elapsedMs: z.number().int().min(0).optional(),
+exports.AnswerBody = zod_1.z.object({
+    sessionId: exports.ObjectId,
+    questionId: exports.ObjectId,
+    selectedIndex: zod_1.z.number().int().min(0),
+    elapsedMs: zod_1.z.number().int().min(0).optional(),
 });
-export const SubmitBody = z.object({
-    sessionId: ObjectId,
+exports.SubmitBody = zod_1.z.object({
+    sessionId: exports.ObjectId,
 });
-export const ViolationBody = z.object({
-    sessionId: ObjectId,
-    type: z.enum(['TAB_BLUR', 'FULLSCREEN_EXIT', 'COPY', 'PASTE', 'RIGHT_CLICK']),
-    meta: z.record(z.string(), z.unknown()).optional(),
+exports.ViolationBody = zod_1.z.object({
+    sessionId: exports.ObjectId,
+    type: zod_1.z.enum(['TAB_BLUR', 'FULLSCREEN_EXIT', 'COPY', 'PASTE', 'RIGHT_CLICK']),
+    meta: zod_1.z.record(zod_1.z.string(), zod_1.z.unknown()).optional(),
 });
-export const SessionIdParams = z.object({
-    sessionId: ObjectId,
+exports.SessionIdParams = zod_1.z.object({
+    sessionId: exports.ObjectId,
 });
-export const UploadChunkQuery = z.object({
-    sessionId: ObjectId,
-    index: z.coerce.number().int().min(0),
+exports.UploadChunkQuery = zod_1.z.object({
+    sessionId: exports.ObjectId,
+    index: zod_1.z.coerce.number().int().min(0),
 });

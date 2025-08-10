@@ -1,8 +1,10 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 // src/seed/seedQuestions.ts
-import { Types } from 'mongoose';
-import { connectDB } from '../config/db';
-import { Competency } from '../models/Competency';
-import { Question } from '../models/Question';
+const mongoose_1 = require("mongoose");
+const db_1 = require("../config/db");
+const Competency_1 = require("../models/Competency");
+const Question_1 = require("../models/Question");
 const LEVELS = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
 /**
  * Optional helper to assign a rough difficulty by level.
@@ -24,8 +26,8 @@ function makeOptions(level, compName) {
     ];
 }
 async function run() {
-    await connectDB();
-    const competencies = await Competency.find({}, { _id: 1, code: 1, name: 1 }).lean();
+    await (0, db_1.connectDB)();
+    const competencies = await Competency_1.Competency.find({}, { _id: 1, code: 1, name: 1 }).lean();
     if (competencies.length === 0) {
         console.error('No competencies found. Run seedCompetencies.ts first.');
         process.exit(1);
@@ -36,10 +38,10 @@ async function run() {
         return {
             updateOne: {
                 // Use (competencyId, level) as the natural key. We keep one MCQ per level per competency.
-                filter: { competencyId: new Types.ObjectId(c._id), level: lvl },
+                filter: { competencyId: new mongoose_1.Types.ObjectId(c._id), level: lvl },
                 update: {
                     $setOnInsert: {
-                        competencyId: new Types.ObjectId(c._id),
+                        competencyId: new mongoose_1.Types.ObjectId(c._id),
                         level: lvl,
                         prompt,
                         options,
@@ -52,7 +54,7 @@ async function run() {
             },
         };
     }));
-    const res = await Question.bulkWrite(ops, { ordered: false });
+    const res = await Question_1.Question.bulkWrite(ops, { ordered: false });
     const inserted = res.upsertedCount ?? 0;
     const matched = res.matchedCount ?? 0;
     // Expecting 22 * 6 = 132 questions total after first run

@@ -1,19 +1,21 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/certification.routes.ts
-import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
-import { requireRole } from '../middleware/rbac.middleware';
-import { validate } from '../middleware/validation.middleware';
-import { meCtrl, getByIdCtrl, verifyCtrl, pdfCtrl } from '../controllers/certification.controller';
-import { CertIdParams, VerifyPublicIdParams } from '../validators/certification.validators';
-const router = Router();
+const express_1 = require("express");
+const auth_middleware_1 = require("../middleware/auth.middleware");
+const rbac_middleware_1 = require("../middleware/rbac.middleware");
+const validation_middleware_1 = require("../middleware/validation.middleware");
+const certification_controller_1 = require("../controllers/certification.controller");
+const certification_validators_1 = require("../validators/certification.validators");
+const router = (0, express_1.Router)();
 // Public verify by certificateId
-router.get('/verify/:certificateId', validate({ params: VerifyPublicIdParams }), verifyCtrl);
+router.get('/verify/:certificateId', (0, validation_middleware_1.validate)({ params: certification_validators_1.VerifyPublicIdParams }), certification_controller_1.verifyCtrl);
 // Authenticated
-router.use(requireAuth);
+router.use(auth_middleware_1.requireAuth);
 // Student: my cert
-router.get('/me', requireRole('student'), meCtrl);
+router.get('/me', (0, rbac_middleware_1.requireRole)('student'), certification_controller_1.meCtrl);
 // Admin/Supervisor: read by _id
-router.get('/:id', requireRole('admin', 'supervisor'), validate({ params: CertIdParams }), getByIdCtrl);
+router.get('/:id', (0, rbac_middleware_1.requireRole)('admin', 'supervisor'), (0, validation_middleware_1.validate)({ params: certification_validators_1.CertIdParams }), certification_controller_1.getByIdCtrl);
 // Admin or owner: download PDF
-router.get('/:id/pdf', validate({ params: CertIdParams }), pdfCtrl);
-export default router;
+router.get('/:id/pdf', (0, validation_middleware_1.validate)({ params: certification_validators_1.CertIdParams }), certification_controller_1.pdfCtrl);
+exports.default = router;

@@ -1,8 +1,10 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/user.routes.ts
-import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
-const router = Router();
-router.get('/me', requireAuth, (req, res) => {
+const express_1 = require("express");
+const auth_middleware_1 = require("../middleware/auth.middleware");
+const router = (0, express_1.Router)();
+router.get('/me', auth_middleware_1.requireAuth, (req, res) => {
     return res.ok({ user: req.user }, 'Current user');
 });
-export default router;
+exports.default = router;

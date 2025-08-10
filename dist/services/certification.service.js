@@ -1,25 +1,35 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getMyCertification = getMyCertification;
+exports.getCertificationById = getCertificationById;
+exports.verifyByPublicId = verifyByPublicId;
+exports.ensurePdfForCertificate = ensurePdfForCertificate;
+exports.updateHighestCertificate = updateHighestCertificate;
 // src/services/certification.service.ts
-import path from 'node:path';
-import fs from 'fs-extra';
-import crypto from 'node:crypto';
-import { Types } from 'mongoose';
-import { Certification } from '../models/Certification';
-import { User } from '../models/User';
-import { env } from '../config/env';
-import { AppError } from '../utils/error';
-import { generateCertificatePDF } from '../utils/pdf';
+const node_path_1 = __importDefault(require("node:path"));
+const fs_extra_1 = __importDefault(require("fs-extra"));
+const node_crypto_1 = __importDefault(require("node:crypto"));
+const mongoose_1 = require("mongoose");
+const Certification_1 = require("../models/Certification");
+const User_1 = require("../models/User");
+const env_1 = require("../config/env");
+const error_1 = require("../utils/error");
+const pdf_1 = require("../utils/pdf");
 /** Return the single (highest) certification for a user, if present. */
-export function getMyCertification(userId) {
-    return Certification.findOne({ userId: new Types.ObjectId(userId) });
+function getMyCertification(userId) {
+    return Certification_1.Certification.findOne({ userId: new mongoose_1.Types.ObjectId(userId) });
 }
-export function getCertificationById(id) {
-    return Certification.findById(id);
+function getCertificationById(id) {
+    return Certification_1.Certification.findById(id);
 }
-export async function verifyByPublicId(certificateId) {
-    const cert = await Certification.findOne({ certificateId });
+async function verifyByPublicId(certificateId) {
+    const cert = await Certification_1.Certification.findOne({ certificateId });
     if (!cert)
-        throw new AppError('NOT_FOUND', 'Certificate not found', 404);
-    const user = await User.findById(cert.userId).lean();
+        throw new error_1.AppError('NOT_FOUND', 'Certificate not found', 404);
+    const user = await User_1.User.findById(cert.userId).lean();
     return {
         certificateId: cert.certificateId,
         highestLevel: cert.highestLevel,
@@ -28,20 +38,20 @@ export async function verifyByPublicId(certificateId) {
     };
 }
 /** Ensure a PDF exists for the certification; generate/update and persist path. */
-export async function ensurePdfForCertificate(certId) {
-    const cert = await Certification.findById(certId);
+async function ensurePdfForCertificate(certId) {
+    const cert = await Certification_1.Certification.findById(certId);
     if (!cert)
-        throw new AppError('NOT_FOUND', 'Certificate not found', 404);
-    const user = await User.findById(cert.userId).lean();
+        throw new error_1.AppError('NOT_FOUND', 'Certificate not found', 404);
+    const user = await User_1.User.findById(cert.userId).lean();
     if (!user)
-        throw new AppError('NOT_FOUND', 'User not found', 404);
-    const dir = path.join(env.UPLOAD_DIR, 'certificates', String(cert.userId));
-    const outPath = path.join(dir, `${cert.certificateId}.pdf`);
+        throw new error_1.AppError('NOT_FOUND', 'User not found', 404);
+    const dir = node_path_1.default.join(env_1.env.UPLOAD_DIR, 'certificates', String(cert.userId));
+    const outPath = node_path_1.default.join(dir, `${cert.certificateId}.pdf`);
     const needGen = !cert.pdfUrl ||
         cert.pdfUrl !== outPath ||
-        !(await fs.pathExists(cert.pdfUrl).catch(() => false));
+        !(await fs_extra_1.default.pathExists(cert.pdfUrl).catch(() => false));
     if (needGen) {
-        await generateCertificatePDF({
+        await (0, pdf_1.generateCertificatePDF)({
             outPath,
             name: user.name,
             email: user.email,
@@ -55,17 +65,17 @@ export async function ensurePdfForCertificate(certId) {
     return cert;
 }
 /** Upsert and keep the user's highest achieved level; regenerate cert/pdf if level increases. */
-export async function updateHighestCertificate(userId, highest) {
+async function updateHighestCertificate(userId, highest) {
     // Fetch current
-    const existing = await Certification.findOne({ userId: new Types.ObjectId(userId) });
+    const existing = await Certification_1.Certification.findOne({ userId: new mongoose_1.Types.ObjectId(userId) });
     const levelOrder = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
     const isHigher = !existing || levelOrder.indexOf(highest) > levelOrder.indexOf(existing.highestLevel);
     if (!existing) {
-        const doc = await Certification.create({
-            userId: new Types.ObjectId(userId),
+        const doc = await Certification_1.Certification.create({
+            userId: new mongoose_1.Types.ObjectId(userId),
             highestLevel: highest,
             issuedAt: new Date(),
-            certificateId: crypto.randomUUID(),
+            certificateId: node_crypto_1.default.randomUUID(),
         });
         await ensurePdfForCertificate(String(doc._id));
         return doc;
@@ -77,7 +87,7 @@ export async function updateHighestCertificate(userId, highest) {
     }
     existing.highestLevel = highest;
     existing.issuedAt = new Date();
-    existing.certificateId = crypto.randomUUID(); // new public id per new level
+    existing.certificateId = node_crypto_1.default.randomUUID(); // new public id per new level
     existing.pdfUrl = null; // force regeneration
     await existing.save();
     await ensurePdfForCertificate(String(existing._id));

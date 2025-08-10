@@ -1,5 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.mapScoreToLevel = mapScoreToLevel;
+exports.maxLevel = maxLevel;
 /** Map percentage → awarded level for a given step (per spec). */
-export function mapScoreToLevel(step, scorePct) {
+function mapScoreToLevel(step, scorePct) {
     const s = scorePct;
     if (step === 1) {
         if (s < 25)
@@ -27,7 +31,7 @@ export function mapScoreToLevel(step, scorePct) {
     return { level: 'C2', proceedNext: false };
 }
 /** Compare two levels and return the higher one. */
-export function maxLevel(a, b) {
+function maxLevel(a, b) {
     const order = ['A1', 'A2', 'B1', 'B2', 'C1', 'C2'];
     if (!a)
         return b;
