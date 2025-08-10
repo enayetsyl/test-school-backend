@@ -66,7 +66,7 @@ export async function createUserCtrl(req: Request, res: Response) {
   if (existing) return res.status(409).json({ success: false, message: 'Email already in use' });
 
   const hash = await bcrypt.hash(password, 10);
-  const created = await User.create({ name, email, role, password: hash, status: 'active' });
+  const created = await User.create({ name, email, role, passwordHash: hash, status: 'active' });
 
   return res.status(201).json({
     success: true,

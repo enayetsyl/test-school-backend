@@ -5,12 +5,15 @@ const ExamSession = model('ExamSession');
 const isStep = (v) => v === 1 || v === 2 || v === 3;
 export const listSessionsCtrl = async (req, res) => {
     const { page, limit, q, status, step, userId, from, to } = req.query;
+    // ---- Coerce query params
+    const pageNum = Number(page) > 0 ? Number(page) : 1;
+    const lim = Number(limit) > 0 ? Number(limit) : 20;
+    const stepNum = step !== undefined ? Number(step) : undefined;
     const filter = {};
     if (status)
         filter.status = status;
-    if (step !== undefined && isStep(step)) {
-        filter.step = step; // now typed as 1 | 2 | 3 ✅
-    }
+    if (stepNum !== undefined && isStep(stepNum))
+        filter.step = stepNum;
     if (userId)
         filter.user = new mongoose.Types.ObjectId(userId);
     if (from || to) {
@@ -21,25 +24,25 @@ export const listSessionsCtrl = async (req, res) => {
             range.$lte = to;
         filter.startedAt = range;
     }
-    const pageNum = page ?? 1;
-    const lim = limit ?? 20;
     const skip = (pageNum - 1) * lim;
     const query = ExamSession.find(filter)
         .sort({ startedAt: -1 })
         .skip(skip)
         .limit(lim)
         .select('_id user step status score startedAt submittedAt violationsCount videoRecordingMeta')
-        .populate({ path: 'user', select: 'name email role' });
+        .populate({ path: 'userId', select: 'name email role', model: 'User' });
     const [items, total] = await Promise.all([
         query.lean(),
         ExamSession.countDocuments(filter),
     ]);
-    const text = q?.toLowerCase();
-    const data = text
+    // ---- Text search on _id, userId.name, userId.email
+    const needle = (q ?? '').toLowerCase().trim();
+    const data = needle.length > 0
         ? items.filter((it) => {
-            const name = it.user?.name?.toLowerCase() ?? '';
-            const email = it.user?.email?.toLowerCase() ?? '';
-            return name.includes(text) || email.includes(text);
+            const idStr = String(it._id ?? '').toLowerCase();
+            const name = (it.userId?.name ?? '').toLowerCase();
+            const email = (it.userId?.email ?? '').toLowerCase();
+            return idStr.includes(needle) || name.includes(needle) || email.includes(needle);
         })
         : items;
     return res.json({

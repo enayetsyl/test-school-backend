@@ -28,4 +28,12 @@ const AuditLogSchema = new Schema<IAuditLog>(
 
 AuditLogSchema.index({ createdAt: -1 });
 
+// ✅ virtual so you can populate('actor')
+AuditLogSchema.virtual('actor', {
+  ref: 'User',
+  localField: 'actorId',
+  foreignField: '_id',
+  justOne: true,
+});
+
 export const AuditLog = model<IAuditLog>('AuditLog', AuditLogSchema);

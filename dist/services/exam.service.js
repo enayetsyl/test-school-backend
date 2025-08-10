@@ -245,3 +245,34 @@ export async function getSessionStatus(params) {
         awardedLevel: session.awardedLevel,
     };
 }
+export async function getLatestResultForUser(params) {
+    const { userId } = params;
+    // Find the most recent non-active session
+    const session = await ExamSession.findOne({
+        userId,
+        status: { $in: ['submitted', 'expired', 'abandoned'] },
+    })
+        .sort({ endAt: -1, updatedAt: -1, createdAt: -1 })
+        .lean();
+    if (!session)
+        return null;
+    // Compute proceedNext consistently with submitExam
+    let proceedNext = false;
+    if ((session.status === 'submitted' || session.status === 'expired') &&
+        typeof session.scorePct === 'number') {
+        const mapped = mapScoreToLevel(session.step, session.scorePct);
+        proceedNext = !!mapped.proceedNext;
+    }
+    const submittedAt = (session.endAt ?? session.updatedAt ?? session.createdAt).toISOString?.() ??
+        String(session.endAt ?? session.updatedAt ?? session.createdAt);
+    const out = {
+        sessionId: String(session._id),
+        step: session.step,
+        status: session.status,
+        ...(typeof session.scorePct === 'number' ? { scorePct: session.scorePct } : {}),
+        ...(session.awardedLevel ? { awardedLevel: session.awardedLevel } : {}),
+        proceedNext,
+        submittedAt,
+    };
+    return out;
+}

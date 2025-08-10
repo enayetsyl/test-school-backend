@@ -9,9 +9,7 @@ export const LoginSchema = z.object({
     email: z.email(),
     password: z.string().min(8).max(100),
 });
-export const RefreshSchema = z.object({
-// empty body; refresh token comes from cookie or Authorization header
-});
+export const RefreshSchema = z.union([z.object({}), z.undefined()]).transform(() => ({}));
 export const LogoutSchema = z.object({}); // nothing needed
 export const SendOtpSchema = z.object({
     email: z.email(),

@@ -26,7 +26,7 @@ const EnvSchema = z.object({
     SMTP_FROM: z.string().min(1),
     UPLOAD_DIR: z.string().default('storage/uploads'),
     VIDEO_DIR: z.string().default('storage/videos'),
-    SEB_MODE: z.enum(['block', 'warn']).default('block'),
+    SEB_MODE: z.enum(['block', 'warn']).default('warn'),
     TIME_PER_QUESTION_SECONDS: z.coerce.number().default(60),
     RATE_LIMIT_WINDOW_MS: z.coerce.number().default(60000),
     RATE_LIMIT_MAX: z.coerce.number().default(100),

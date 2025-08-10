@@ -19,6 +19,7 @@ import {
   submitCtrl,
   statusCtrl,
   violationCtrl,
+  latestResultCtrl,
 } from '../controllers/exam.controller';
 
 import { chunkUploadMulter, uploadChunkCtrl } from '../controllers/video.controller';
@@ -41,6 +42,8 @@ router.post('/answer', requireSebHeaders, validate(AnswerBody), answerCtrl);
 
 // Submit
 router.post('/submit', requireSebHeaders, validate(SubmitBody), submitCtrl);
+
+router.get('/me/latest-result', latestResultCtrl);
 
 // Status
 router.get('/status/:sessionId', validate({ params: SessionIdParams }), statusCtrl);

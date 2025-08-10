@@ -14,6 +14,7 @@ import {
 } from '../services/question.service';
 import { parseCsvBuffer, sendCsv } from '../utils/csv';
 import { type Level, Question } from '../models/Question';
+import { ImportRowSchema } from '../validators/import.validators';
 
 type MulterFile = Express.Multer.File;
 
@@ -113,17 +114,48 @@ export const importCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
       .json({ success: false, code: 'VALIDATION_ERROR', message: 'CSV file is required' });
   }
 
-  // Remove `any`: parse rows as your service ImportRow type
-  const rows = await parseCsvBuffer<ImportRow>(file.buffer);
-  const mode = (req.query.mode as 'upsert' | 'insert') ?? 'upsert';
+  const rawRows = await parseCsvBuffer<Record<string, unknown>>(file.buffer);
 
+  // zod-validate each row (note: use .issues, not .errors)
+  const rows: ImportRow[] = [];
+  const parseErrors: Array<{ row: number; error: string }> = [];
+
+  rawRows.forEach((r, i) => {
+    const parsed = ImportRowSchema.safeParse(r);
+    if (!parsed.success) {
+      parseErrors.push({ row: i + 1, error: parsed.error.issues.map((e) => e.message).join('; ') });
+      return;
+    }
+
+    // Remove keys whose value is `undefined` so optional fields are truly "omitted"
+    const clean = Object.fromEntries(
+      Object.entries(parsed.data).filter(([, v]) => v !== undefined),
+    ) as ImportRow;
+
+    rows.push(clean);
+  });
+
+  const mode = (req.query.mode as 'upsert' | 'insert') ?? 'upsert';
   const result = await importQuestions(rows, mode);
 
-  // match your logAudit signature
-  await logAudit(req.user!.sub, 'QUESTION_IMPORT', undefined, { mode, ...result });
-  // or: await logAudit(req.user!.sub, 'QUESTION_IMPORT', { mode, ...result });
+  const payload = { ...result, parseErrors, totalRows: rawRows.length };
 
-  return res.ok(result, 'Import complete');
+  // log everything
+  await logAudit(req.user!.sub, 'QUESTION_IMPORT', undefined, { mode, ...payload });
+
+  // If any kind of row error occurred → fail the request
+  if (parseErrors.length || result.errors.length) {
+    const failed = parseErrors.length + result.errors.length;
+    return res.status(400).json({
+      success: false,
+      code: 'VALIDATION_ERROR',
+      message: `${failed} row(s) failed validation`,
+      data: payload,
+    });
+  }
+
+  // No errors → success
+  return res.ok(payload, 'Import complete');
 });
 
 export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
@@ -133,8 +165,6 @@ export const exportCsvCtrl: RequestHandler = asyncHandler(async (req, res) => {
   if (req.query.competencyId) filter.competencyId = req.query.competencyId;
   if (req.query.isActive !== undefined) filter.isActive = req.query.isActive === 'true';
   if (req.query.q) filter['$text'] = { $search: String(req.query.q) };
-
-  console.log('req', req.query);
 
   // For type safety during export
   type PopulatedQuestion = {

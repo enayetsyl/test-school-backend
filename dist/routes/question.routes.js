@@ -11,8 +11,8 @@ router.use(requireAuth);
 router.post('/import', requireRole('admin'), validate({ query: ImportQuery }), importMulter, importCsvCtrl);
 router.get('/export', requireRole('admin'), exportCsvCtrl);
 // list/read (admin, supervisor)
-router.get('/', requireRole('admin', 'supervisor'), validate({ query: ListQuestionQuery }), listCtrl);
-router.get('/:id', requireRole('admin', 'supervisor'), validate({ params: QuestionIdParams }), getCtrl);
+router.get('/', requireRole('admin', 'supervisor', 'student'), validate({ query: ListQuestionQuery }), listCtrl);
+router.get('/:id', requireRole('admin', 'supervisor', 'student'), validate({ params: QuestionIdParams }), getCtrl);
 // create/update/delete (admin)
 router.post('/', requireRole('admin'), validate(CreateQuestionSchema), createCtrl);
 router.patch('/:id', requireRole('admin'), validate({ params: QuestionIdParams, body: UpdateQuestionSchema }), updateCtrl);
