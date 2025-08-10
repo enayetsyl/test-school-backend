@@ -1,6 +1,6 @@
 import { asyncHandler } from '../utils/asyncHandler';
 import { sendOk, sendCreated } from '../utils/respond';
-import { startExam, answerQuestion, submitExam, getSessionStatus, recordViolation, } from '../services/exam.service';
+import { startExam, answerQuestion, submitExam, getSessionStatus, recordViolation, getLatestResultForUser, } from '../services/exam.service';
 import { emitSessionStart, emitSessionAnswer, emitSessionViolation, emitSessionSubmit, } from '../sockets/exam.socket';
 export const startCtrl = asyncHandler(async (req, res) => {
     const userId = req.user.sub;
@@ -71,4 +71,10 @@ export const violationCtrl = asyncHandler(async (req, res) => {
     });
     emitSessionViolation(sessionId, { type, occurredAt: new Date().toISOString() });
     return sendOk(res, out, 'Violation recorded');
+});
+export const latestResultCtrl = asyncHandler(async (req, res) => {
+    const userId = req.user.sub;
+    const out = await getLatestResultForUser({ userId });
+    // Return null when nothing found (consistent with cert API style)
+    return sendOk(res, { latest: out }, 'Latest exam result');
 });

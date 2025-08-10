@@ -40,7 +40,9 @@ export const forgot = asyncHandler(async (req, res) => {
     return sendOk(res, { sent: true }, 'If the email exists, an OTP has been sent.');
 });
 export const reset = asyncHandler(async (req, res) => {
-    await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+    console.log('req.body', req.body);
+    const rest = await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+    console.log('reset password', rest);
     return sendOk(res, { reset: true }, 'Password reset successful. Please login.');
 });
 export function publicUser(u) {

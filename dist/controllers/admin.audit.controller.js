@@ -1,14 +1,12 @@
-import mongoose, { Types } from 'mongoose';
+import { Types } from 'mongoose';
 // Prefer importing your model if exported:
-//   import { AuditLog } from '../models/auditLog.model';
-const AuditLog = mongoose.model('AuditLog');
+import { AuditLog } from '../models/AuditLog';
+// const AuditLog = mongoose.model('AuditLog');
 export async function listAuditLogsCtrl(req, res) {
     const { page, limit, actorId, action, resource, from, to, q } = req.query;
     const filter = {};
     if (actorId)
-        filter.actor = new Types.ObjectId(actorId);
-    if (actorId)
-        filter.actor = actorId;
+        filter.actorId = new Types.ObjectId(actorId);
     if (action)
         filter.action = action;
     if (resource)
@@ -30,16 +28,38 @@ export async function listAuditLogsCtrl(req, res) {
     const pageNum = Number(page) || 1;
     const lim = Number(limit) || 20;
     const skip = (pageNum - 1) * lim;
-    const [items, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
         AuditLog.find(filter)
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(lim)
-            .populate({ path: 'actor', select: 'name email role' })
-            .select('_id action resource resourceId message meta createdAt actor')
+            .select('_id action target message meta createdAt actorId')
+            .populate({ path: 'actorId', select: 'name email role' })
             .lean(),
         AuditLog.countDocuments(filter),
     ]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = rows.map((r) => ({
+        _id: r._id,
+        action: r.action,
+        resource: r?.target?.type ?? null,
+        resourceId: r?.target?.id ?? null,
+        message: typeof r?.meta?.message === 'string'
+            ? r.meta.message
+            : typeof r?.meta?.note === 'string'
+                ? r.meta.note
+                : undefined,
+        createdAt: r.createdAt,
+        // expose as `actor` for the frontend
+        actor: r.actorId && typeof r.actorId === 'object'
+            ? {
+                id: String(r.actorId._id),
+                name: r.actorId.name,
+                email: r.actorId.email,
+                role: r.actorId.role,
+            }
+            : null,
+    }));
     return res.json({
         success: true,
         meta: { page: pageNum, limit: lim, total, pageCount: Math.ceil(total / lim) },

@@ -5,7 +5,7 @@ import { requireRole } from '../middleware/rbac.middleware';
 import { validate } from '../middleware/validation.middleware';
 import { requireSebHeaders } from '../middleware/seb.middleware';
 import { StartExamQuery, StartExamBody, AnswerBody, SubmitBody, ViolationBody, SessionIdParams, UploadChunkQuery, } from '../validators/exam.validators';
-import { startCtrl, answerCtrl, submitCtrl, statusCtrl, violationCtrl, } from '../controllers/exam.controller';
+import { startCtrl, answerCtrl, submitCtrl, statusCtrl, violationCtrl, latestResultCtrl, } from '../controllers/exam.controller';
 import { chunkUploadMulter, uploadChunkCtrl } from '../controllers/video.controller';
 const router = Router();
 router.use(requireAuth);
@@ -16,6 +16,7 @@ router.post('/start', requireSebHeaders, validate({ query: StartExamQuery, body:
 router.post('/answer', requireSebHeaders, validate(AnswerBody), answerCtrl);
 // Submit
 router.post('/submit', requireSebHeaders, validate(SubmitBody), submitCtrl);
+router.get('/me/latest-result', latestResultCtrl);
 // Status
 router.get('/status/:sessionId', validate({ params: SessionIdParams }), statusCtrl);
 // Violations (allow even if SEB warn mode)

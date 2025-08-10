@@ -20,7 +20,12 @@ export async function listQuestions(opts) {
         [opts.sortBy ?? 'createdAt']: (opts.sortOrder ?? 'desc') === 'asc' ? 1 : -1,
     };
     const [items, total] = await Promise.all([
-        Question.find(filter).sort(sort).skip(skip).limit(limit).lean(),
+        Question.find(filter)
+            .sort(sort)
+            .skip(skip)
+            .limit(limit)
+            .populate({ path: 'competencyId', select: 'name' })
+            .lean(),
         Question.countDocuments(filter),
     ]);
     return { items, meta: { page, limit, total } };
