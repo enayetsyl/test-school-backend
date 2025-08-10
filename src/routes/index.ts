@@ -6,6 +6,11 @@ import userRoutes from './user.routes';
 import competencyRoutes from './competency.routes';
 import questionRoutes from './question.routes';
 import examRoutes from './exam.routes';
+import certificationRoutes from './certification.routes';
+import adminConfigRoutes from './config.routes';
+import adminSessionsRoutes from './admin.sessions.routes';
+import adminUsersRoutes from './admin.users.routes';
+import adminAuditRoutes from './admin.audit.routes';
 
 const router = Router();
 
@@ -16,5 +21,10 @@ router.use('/users', userRoutes);
 router.use('/competencies', competencyRoutes);
 router.use('/questions', questionRoutes);
 router.use('/exam', examRoutes);
+router.use('/certifications', certificationRoutes);
+router.use('/admin/config', adminConfigRoutes);
+router.use('/admin/sessions', adminSessionsRoutes);
+router.use('/admin/users', adminUsersRoutes);
+router.use('/admin/audit-logs', adminAuditRoutes);
 
 export default router;

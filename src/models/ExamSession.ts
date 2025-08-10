@@ -45,6 +45,14 @@ export interface IExamSession {
     screen?: { width: number; height: number };
     sebHeadersPresent?: boolean;
   };
+  videoRecordingMeta?: {
+    dir: string; // chunk directory
+    mime?: string | undefined; // e.g., 'video/webm'
+    chunks?: number; // highest index+1 we've seen (best-effort)
+    assembledPath?: string; // final file path
+    sizeBytes?: number; // final size (assembled)
+    completedAt?: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -110,6 +118,14 @@ const ExamSessionSchema = new Schema<IExamSession>(
       userAgent: String,
       screen: { width: Number, height: Number },
       sebHeadersPresent: Boolean,
+    },
+    videoRecordingMeta: {
+      dir: { type: String },
+      mime: { type: String },
+      chunks: { type: Number },
+      assembledPath: { type: String },
+      sizeBytes: { type: Number },
+      completedAt: { type: Date },
     },
   },
   { timestamps: true },

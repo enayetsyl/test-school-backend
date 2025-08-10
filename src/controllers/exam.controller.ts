@@ -10,6 +10,12 @@ import {
   recordViolation,
 } from '../services/exam.service';
 import { type ViolationType } from '../models/ExamSession';
+import {
+  emitSessionStart,
+  emitSessionAnswer,
+  emitSessionViolation,
+  emitSessionSubmit,
+} from '../sockets/exam.socket';
 
 export const startCtrl: RequestHandler = asyncHandler(async (req, res) => {
   const userId = req.user!.sub;
@@ -29,6 +35,14 @@ export const startCtrl: RequestHandler = asyncHandler(async (req, res) => {
       : {}),
   };
   const out = await startExam({ userId, step, client });
+
+  emitSessionStart(out.sessionId, {
+    userId,
+    step,
+    deadlineAt: out.deadlineAt.toISOString?.() ?? String(out.deadlineAt),
+    totalQuestions: out.totalQuestions,
+  });
+
   return sendCreated(res, out, 'Exam started');
 });
 
@@ -56,6 +70,15 @@ export const answerCtrl: RequestHandler = asyncHandler(async (req, res) => {
   };
 
   const out = await answerQuestion(payload);
+
+  const answeredAt = new Date().toISOString();
+
+  emitSessionAnswer(req.body.sessionId, {
+    questionId: req.body.questionId,
+    selectedIndex: req.body.selectedIndex,
+    answeredAt,
+  });
+
   return sendOk(res, out, 'Answer saved');
 });
 
@@ -63,6 +86,14 @@ export const submitCtrl: RequestHandler = asyncHandler(async (req, res) => {
   const userId = req.user!.sub;
   const { sessionId } = req.body as { sessionId: string };
   const out = await submitExam({ userId, sessionId, reason: 'user' });
+
+  emitSessionSubmit(req.body.sessionId, {
+    status: out.status,
+    scorePct: out.scorePct,
+    ...(out.awardedLevel ? { awardedLevel: out.awardedLevel } : {}),
+    proceedNext: out.proceedNext,
+  });
+
   return sendOk(res, out, 'Exam submitted');
 });
 
@@ -88,5 +119,8 @@ export const violationCtrl: RequestHandler = asyncHandler(async (req, res) => {
     type,
     ...(meta ? { meta } : {}),
   });
+
+  emitSessionViolation(sessionId, { type, occurredAt: new Date().toISOString() });
+
   return sendOk(res, out, 'Violation recorded');
 });

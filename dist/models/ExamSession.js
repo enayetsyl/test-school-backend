@@ -47,6 +47,14 @@ const ExamSessionSchema = new Schema({
         screen: { width: Number, height: Number },
         sebHeadersPresent: Boolean,
     },
+    videoRecordingMeta: {
+        dir: { type: String },
+        mime: { type: String },
+        chunks: { type: Number },
+        assembledPath: { type: String },
+        sizeBytes: { type: Number },
+        completedAt: { type: Date },
+    },
 }, { timestamps: true });
 ExamSessionSchema.index({ userId: 1, step: 1, status: 1 });
 ExamSessionSchema.index({ 'questions.questionId': 1 }, { sparse: true });

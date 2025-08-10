@@ -1,4 +1,4 @@
-// auth/validators/exam.validators.ts
+// validators/exam.validators.ts
 import { z } from 'zod';
 export const ObjectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Invalid id');
 export const StartExamQuery = z.object({
@@ -25,4 +25,8 @@ export const ViolationBody = z.object({
 });
 export const SessionIdParams = z.object({
     sessionId: ObjectId,
+});
+export const UploadChunkQuery = z.object({
+    sessionId: ObjectId,
+    index: z.coerce.number().int().min(0),
 });

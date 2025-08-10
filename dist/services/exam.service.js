@@ -4,10 +4,11 @@ import { Types } from 'mongoose';
 import { env } from '../config/env';
 import { AppError } from '../utils/error';
 import { Question } from '../models/Question';
-import { ExamSession } from '../models/ExamSession';
+import { ExamSession, } from '../models/ExamSession';
 import { User } from '../models/User';
-import { Certification } from '../models/Certification';
 import { mapScoreToLevel, maxLevel } from './scoring.service';
+import { assembleChunks } from './video.service';
+import { updateHighestCertificate } from './certification.service';
 function levelsForStep(step) {
     if (step === 1)
         return ['A1', 'A2'];
@@ -143,11 +144,25 @@ export async function submitExam(params) {
     if (!session)
         throw new AppError('NOT_FOUND', 'Session not found', 404);
     if (session.status !== 'active') {
-        return { already: true, sessionId };
+        const allowed = ['submitted', 'expired', 'abandoned'];
+        const st = session.status;
+        const safeStatus = allowed.includes(st)
+            ? st
+            : 'submitted';
+        return {
+            sessionId,
+            status: safeStatus,
+            scorePct: session.scorePct ?? 0,
+            proceedNext: false,
+            ...(session.awardedLevel ? { awardedLevel: session.awardedLevel } : {}),
+            already: true,
+        };
     }
     const now = new Date();
     const expired = now > session.deadlineAt;
-    session.status = expired ? 'expired' : 'submitted';
+    // Compute and persist the final status
+    const finalStatus = expired ? 'expired' : 'submitted';
+    session.status = finalStatus;
     session.endAt = now;
     // Score
     const ids = session.questions.map((q) => q.questionId);
@@ -167,7 +182,9 @@ export async function submitExam(params) {
     }
     const scorePct = Math.round((correct / session.totalQuestions) * 10000) / 100; // 2 decimals
     session.scorePct = scorePct;
-    const { level, proceedNext } = mapScoreToLevel(session.step, scorePct); // per spec thresholds
+    const mapped = mapScoreToLevel(session.step, scorePct);
+    const level = mapped.level;
+    const proceedNext = !!mapped.proceedNext;
     if (level)
         session.awardedLevel = level;
     // Step 1 <25% locks retake
@@ -177,7 +194,7 @@ export async function submitExam(params) {
     await session.save();
     const prior = await ExamSession.find({
         userId,
-        status: { $in: ['submitted', 'expired'] },
+        status: { $in: ['submitted', 'expired', 'auto-submitted', 'closed'] },
     })
         .select('awardedLevel')
         .lean();
@@ -187,15 +204,27 @@ export async function submitExam(params) {
     }
     highest = maxLevel(highest, session.awardedLevel);
     if (highest) {
-        const certificateId = crypto.randomUUID();
-        await Certification.updateOne({ userId }, { $set: { highestLevel: highest, issuedAt: new Date(), certificateId } }, { upsert: true });
+        try {
+            await updateHighestCertificate(userId, highest);
+        }
+        catch (e) {
+            // Non-fatal: scoring should not fail if certificate generation hiccups
+            console.error('Certificate update failed for user', userId, e);
+        }
+    }
+    try {
+        await assembleChunks({ sessionId });
+    }
+    catch (e) {
+        // Non-fatal: we don't want submission to fail because of video assembly
+        console.error('Video assembly failed for session', sessionId, e);
     }
     return {
         sessionId,
-        status: session.status,
+        status: finalStatus,
         scorePct,
-        awardedLevel: session.awardedLevel,
-        proceedNext: !!proceedNext,
+        ...(highest ? { awardedLevel: highest } : {}), // OMIT when undefined
+        proceedNext, // boolean
     };
 }
 export async function getSessionStatus(params) {
