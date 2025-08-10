@@ -1,12 +1,15 @@
-import { Types } from 'mongoose';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.listAuditLogsCtrl = listAuditLogsCtrl;
+const mongoose_1 = require("mongoose");
 // Prefer importing your model if exported:
-import { AuditLog } from '../models/AuditLog';
+const AuditLog_1 = require("../models/AuditLog");
 // const AuditLog = mongoose.model('AuditLog');
-export async function listAuditLogsCtrl(req, res) {
+async function listAuditLogsCtrl(req, res) {
     const { page, limit, actorId, action, resource, from, to, q } = req.query;
     const filter = {};
     if (actorId)
-        filter.actorId = new Types.ObjectId(actorId);
+        filter.actorId = new mongoose_1.Types.ObjectId(actorId);
     if (action)
         filter.action = action;
     if (resource)
@@ -29,14 +32,14 @@ export async function listAuditLogsCtrl(req, res) {
     const lim = Number(limit) || 20;
     const skip = (pageNum - 1) * lim;
     const [rows, total] = await Promise.all([
-        AuditLog.find(filter)
+        AuditLog_1.AuditLog.find(filter)
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(lim)
             .select('_id action target message meta createdAt actorId')
             .populate({ path: 'actorId', select: 'name email role' })
             .lean(),
-        AuditLog.countDocuments(filter),
+        AuditLog_1.AuditLog.countDocuments(filter),
     ]);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const items = rows.map((r) => ({

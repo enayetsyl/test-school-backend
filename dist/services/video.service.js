@@ -1,37 +1,45 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.mustGetActiveOwnedSession = mustGetActiveOwnedSession;
+exports.saveChunk = saveChunk;
+exports.assembleChunks = assembleChunks;
 // src/services/video.service.ts
-import path from 'node:path';
-import fs from 'fs-extra';
-import { Types } from 'mongoose';
-import { env } from '../config/env';
-import { AppError } from '../utils/error';
-import { ExamSession } from '../models/ExamSession';
-import { RecordingAsset } from '../models/RecordingAsset';
+const node_path_1 = __importDefault(require("node:path"));
+const fs_extra_1 = __importDefault(require("fs-extra"));
+const mongoose_1 = require("mongoose");
+const env_1 = require("../config/env");
+const error_1 = require("../utils/error");
+const ExamSession_1 = require("../models/ExamSession");
+const RecordingAsset_1 = require("../models/RecordingAsset");
 function chunkDir(sessionId) {
-    return path.join(env.VIDEO_DIR, sessionId);
+    return node_path_1.default.join(env_1.env.VIDEO_DIR, sessionId);
 }
 function chunkPath(sessionId, index) {
-    return path.join(chunkDir(sessionId), `chunk_${index}`);
+    return node_path_1.default.join(chunkDir(sessionId), `chunk_${index}`);
 }
 function finalPath(sessionId, ext = '.webm') {
-    return path.join(env.VIDEO_DIR, sessionId, `recording${ext}`);
+    return node_path_1.default.join(env_1.env.VIDEO_DIR, sessionId, `recording${ext}`);
 }
 /** Ensure the current user owns the active session. Return session doc. */
-export async function mustGetActiveOwnedSession(userId, sessionId) {
-    const s = await ExamSession.findOne({ _id: sessionId, userId, status: 'active' });
+async function mustGetActiveOwnedSession(userId, sessionId) {
+    const s = await ExamSession_1.ExamSession.findOne({ _id: sessionId, userId, status: 'active' });
     if (!s)
-        throw new AppError('FORBIDDEN', 'Session not found or not active', 403);
+        throw new error_1.AppError('FORBIDDEN', 'Session not found or not active', 403);
     return s;
 }
 /** Save a raw chunk to disk atomically. */
-export async function saveChunk(params) {
+async function saveChunk(params) {
     const { userId, sessionId, index, buffer, mime } = params;
     const session = await mustGetActiveOwnedSession(userId, sessionId);
     const dir = chunkDir(sessionId);
-    await fs.ensureDir(dir);
-    const tmpFile = path.join(dir, `chunk_${index}.tmp`);
+    await fs_extra_1.default.ensureDir(dir);
+    const tmpFile = node_path_1.default.join(dir, `chunk_${index}.tmp`);
     const file = chunkPath(sessionId, index);
-    await fs.writeFile(tmpFile, buffer);
-    await fs.move(tmpFile, file, { overwrite: true });
+    await fs_extra_1.default.writeFile(tmpFile, buffer);
+    await fs_extra_1.default.move(tmpFile, file, { overwrite: true });
     console.log('Saved chunk ->', file);
     // Track meta (best-effort; not required for correctness)
     session.videoRecordingMeta = {
@@ -47,13 +55,13 @@ export async function saveChunk(params) {
  * Assemble all chunks into a single file (ordered by index).
  * Makes a best-effort attempt and is safe to call multiple times.
  */
-export async function assembleChunks(params) {
+async function assembleChunks(params) {
     const { sessionId, expectedExt = '.webm' } = params;
     const dir = chunkDir(sessionId);
-    const exists = await fs.pathExists(dir);
+    const exists = await fs_extra_1.default.pathExists(dir);
     if (!exists)
         return { assembled: false, reason: 'no-chunks' };
-    const names = (await fs.readdir(dir)).filter((n) => n.startsWith('chunk_'));
+    const names = (await fs_extra_1.default.readdir(dir)).filter((n) => n.startsWith('chunk_'));
     if (names.length === 0)
         return { assembled: false, reason: 'no-chunks' };
     // Sort by numeric index
@@ -63,12 +71,12 @@ export async function assembleChunks(params) {
         .sort((a, b) => a.i - b.i);
     const outPath = finalPath(sessionId, expectedExt);
     const outTmp = `${outPath}.tmp`;
-    await fs.ensureFile(outTmp);
-    const out = fs.createWriteStream(outTmp);
+    await fs_extra_1.default.ensureFile(outTmp);
+    const out = fs_extra_1.default.createWriteStream(outTmp);
     for (const e of entries) {
-        const p = path.join(dir, e.n);
+        const p = node_path_1.default.join(dir, e.n);
         await new Promise((resolve, reject) => {
-            const rs = fs.createReadStream(p);
+            const rs = fs_extra_1.default.createReadStream(p);
             rs.on('error', reject);
             out.on('error', reject);
             rs.on('end', resolve);
@@ -79,10 +87,10 @@ export async function assembleChunks(params) {
         out.on('error', reject);
         out.end(resolve);
     });
-    const size = (await fs.stat(outTmp)).size;
-    await fs.move(outTmp, outPath, { overwrite: true });
+    const size = (await fs_extra_1.default.stat(outTmp)).size;
+    await fs_extra_1.default.move(outTmp, outPath, { overwrite: true });
     // Record an asset (upsert by session)
-    await RecordingAsset.updateOne({ sessionId: new Types.ObjectId(sessionId) }, {
+    await RecordingAsset_1.RecordingAsset.updateOne({ sessionId: new mongoose_1.Types.ObjectId(sessionId) }, {
         $set: {
             kind: 'video',
             storagePath: outPath,
@@ -92,7 +100,7 @@ export async function assembleChunks(params) {
         },
     }, { upsert: true });
     // Update session meta (best-effort)
-    await ExamSession.updateOne({ _id: sessionId }, {
+    await ExamSession_1.ExamSession.updateOne({ _id: sessionId }, {
         $set: {
             'videoRecordingMeta.assembledPath': outPath,
             'videoRecordingMeta.sizeBytes': size,

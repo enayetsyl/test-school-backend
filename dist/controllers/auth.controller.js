@@ -1,51 +1,55 @@
-import { asyncHandler } from '../utils/asyncHandler';
-import { registerUser, loginUser, rotateRefreshToken, logoutUser, sendOtp, verifyOtp, forgotPassword, resetPassword, } from '../services/auth.service';
-import { setRefreshCookie, clearRefreshCookie, readRefreshFromCookieOrHeader, } from '../utils/cookies';
-import { sendOk, sendCreated } from '../utils/respond';
-export const register = asyncHandler(async (req, res) => {
-    const user = await registerUser(req.body);
-    return sendCreated(res, { user: publicUser(user) }, 'Registered. Verification code sent to email.');
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.reset = exports.forgot = exports.verifyOtpCtrl = exports.sendOtpCtrl = exports.logout = exports.refresh = exports.login = exports.register = void 0;
+exports.publicUser = publicUser;
+const asyncHandler_1 = require("../utils/asyncHandler");
+const auth_service_1 = require("../services/auth.service");
+const cookies_1 = require("../utils/cookies");
+const respond_1 = require("../utils/respond");
+exports.register = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    const user = await (0, auth_service_1.registerUser)(req.body);
+    return (0, respond_1.sendCreated)(res, { user: publicUser(user) }, 'Registered. Verification code sent to email.');
 });
-export const login = asyncHandler(async (req, res) => {
-    const { user, accessToken, refreshToken } = await loginUser(req.body);
-    setRefreshCookie(res, refreshToken);
-    return sendOk(res, { user: publicUser(user), accessToken });
+exports.login = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    const { user, accessToken, refreshToken } = await (0, auth_service_1.loginUser)(req.body);
+    (0, cookies_1.setRefreshCookie)(res, refreshToken);
+    return (0, respond_1.sendOk)(res, { user: publicUser(user), accessToken });
 });
-export const refresh = asyncHandler(async (req, res) => {
-    const rt = readRefreshFromCookieOrHeader(req);
+exports.refresh = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    const rt = (0, cookies_1.readRefreshFromCookieOrHeader)(req);
     if (!rt)
         return res
             .status(401)
             .json({ success: false, code: 'UNAUTHORIZED', message: 'Missing refresh token' });
-    const { accessToken, refreshToken } = await rotateRefreshToken(rt);
-    setRefreshCookie(res, refreshToken);
-    return sendOk(res, { accessToken });
+    const { accessToken, refreshToken } = await (0, auth_service_1.rotateRefreshToken)(rt);
+    (0, cookies_1.setRefreshCookie)(res, refreshToken);
+    return (0, respond_1.sendOk)(res, { accessToken });
 });
-export const logout = asyncHandler(async (req, res) => {
-    const rt = readRefreshFromCookieOrHeader(req);
-    await logoutUser(rt);
-    clearRefreshCookie(res);
+exports.logout = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    const rt = (0, cookies_1.readRefreshFromCookieOrHeader)(req);
+    await (0, auth_service_1.logoutUser)(rt);
+    (0, cookies_1.clearRefreshCookie)(res);
     return res.noContent();
 });
-export const sendOtpCtrl = asyncHandler(async (req, res) => {
-    await sendOtp(req.body.email, req.body.purpose);
-    return sendOk(res, { sent: true }, 'OTP sent');
+exports.sendOtpCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    await (0, auth_service_1.sendOtp)(req.body.email, req.body.purpose);
+    return (0, respond_1.sendOk)(res, { sent: true }, 'OTP sent');
 });
-export const verifyOtpCtrl = asyncHandler(async (req, res) => {
-    const out = await verifyOtp(req.body.email, req.body.otp, req.body.purpose);
-    return sendOk(res, out, 'OTP verified');
+exports.verifyOtpCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    const out = await (0, auth_service_1.verifyOtp)(req.body.email, req.body.otp, req.body.purpose);
+    return (0, respond_1.sendOk)(res, out, 'OTP verified');
 });
-export const forgot = asyncHandler(async (req, res) => {
-    await forgotPassword(req.body.email);
-    return sendOk(res, { sent: true }, 'If the email exists, an OTP has been sent.');
+exports.forgot = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
+    await (0, auth_service_1.forgotPassword)(req.body.email);
+    return (0, respond_1.sendOk)(res, { sent: true }, 'If the email exists, an OTP has been sent.');
 });
-export const reset = asyncHandler(async (req, res) => {
+exports.reset = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     console.log('req.body', req.body);
-    const rest = await resetPassword(req.body.email, req.body.otp, req.body.newPassword);
+    const rest = await (0, auth_service_1.resetPassword)(req.body.email, req.body.otp, req.body.newPassword);
     console.log('reset password', rest);
-    return sendOk(res, { reset: true }, 'Password reset successful. Please login.');
+    return (0, respond_1.sendOk)(res, { reset: true }, 'Password reset successful. Please login.');
 });
-export function publicUser(u) {
+function publicUser(u) {
     // keep tight: do not expose sensitive props
     return {
         id: u._id.toString(),

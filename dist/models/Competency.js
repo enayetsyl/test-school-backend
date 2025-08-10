@@ -1,6 +1,9 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Competency = void 0;
 // src/models/Competency.ts
-import { Schema, model } from 'mongoose';
-const CompetencySchema = new Schema({
+const mongoose_1 = require("mongoose");
+const CompetencySchema = new mongoose_1.Schema({
     code: { type: String, required: true, unique: true, trim: true, minlength: 3, maxlength: 50 },
     name: { type: String, required: true, trim: true, minlength: 2, maxlength: 150 },
     description: { type: String, trim: true, maxlength: 1000 },
@@ -8,4 +11,4 @@ const CompetencySchema = new Schema({
 // Helpful indexes for admin search
 CompetencySchema.index({ name: 1 });
 CompetencySchema.index({ name: 'text', description: 'text' });
-export const Competency = model('Competency', CompetencySchema);
+exports.Competency = (0, mongoose_1.model)('Competency', CompetencySchema);

@@ -1,11 +1,15 @@
-import { Server as SocketIOServer } from 'socket.io';
-import { env } from './env';
-import { verifyAccessToken } from '../utils/jwt';
-import { registerExamSocketHandlers } from '../sockets/exam.socket';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.initSocket = initSocket;
+exports.getIO = getIO;
+const socket_io_1 = require("socket.io");
+const env_1 = require("./env");
+const jwt_1 = require("../utils/jwt");
+const exam_socket_1 = require("../sockets/exam.socket");
 let io;
-export function initSocket(server) {
-    io = new SocketIOServer(server, {
-        cors: { origin: env.CLIENT_URL, credentials: true },
+function initSocket(server) {
+    io = new socket_io_1.Server(server, {
+        cors: { origin: env_1.env.CLIENT_URL, credentials: true },
     });
     // Lightweight auth middleware
     io.use((socket, next) => {
@@ -17,7 +21,7 @@ export function initSocket(server) {
                 bearer.split(' ')[1];
             if (!token)
                 return next(new Error('Missing token'));
-            const payload = verifyAccessToken(token);
+            const payload = (0, jwt_1.verifyAccessToken)(token);
             socket.data.user = payload;
             return next();
         }
@@ -25,10 +29,10 @@ export function initSocket(server) {
             return next(new Error('Unauthorized'));
         }
     });
-    registerExamSocketHandlers(io);
+    (0, exam_socket_1.registerExamSocketHandlers)(io);
     return io;
 }
-export function getIO() {
+function getIO() {
     if (!io)
         throw new Error('Socket.io not initialized');
     return io;

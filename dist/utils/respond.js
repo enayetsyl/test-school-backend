@@ -1,4 +1,10 @@
-export function sendOk(res, data, message, meta) {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.sendOk = sendOk;
+exports.sendCreated = sendCreated;
+exports.sendNoContent = sendNoContent;
+exports.sendPaginated = sendPaginated;
+function sendOk(res, data, message, meta) {
     const body = {
         success: true,
         data,
@@ -7,7 +13,7 @@ export function sendOk(res, data, message, meta) {
     };
     return res.status(200).json(body);
 }
-export function sendCreated(res, data, message, meta) {
+function sendCreated(res, data, message, meta) {
     const body = {
         success: true,
         data,
@@ -16,11 +22,11 @@ export function sendCreated(res, data, message, meta) {
     };
     return res.status(201).json(body);
 }
-export function sendNoContent(res) {
+function sendNoContent(res) {
     // Prefer true 204 with no body
     return res.status(204).end();
 }
 // Convenience for paginated lists
-export function sendPaginated(res, items, meta, message) {
+function sendPaginated(res, items, meta, message) {
     return sendOk(res, items, message, meta);
 }

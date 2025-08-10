@@ -1,12 +1,14 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
 // src/routes/admin.sessions.routes.ts
-import { Router } from 'express';
-import { requireAuth } from '../middleware/auth.middleware';
-import { requireRole } from '../middleware/rbac.middleware';
-import { validate } from '../middleware/validation.middleware';
-import { listSessionsCtrl, getSessionCtrl } from '../controllers/admin.sessions.controller';
-import { ListSessionsQuery, SessionIdParams } from '../validators/admin.sessions.validators';
-const router = Router();
-router.use(requireAuth, requireRole('admin', 'supervisor'));
-router.get('/', validate(ListSessionsQuery), listSessionsCtrl);
-router.get('/:id', validate(SessionIdParams), getSessionCtrl);
-export default router;
+const express_1 = require("express");
+const auth_middleware_1 = require("../middleware/auth.middleware");
+const rbac_middleware_1 = require("../middleware/rbac.middleware");
+const validation_middleware_1 = require("../middleware/validation.middleware");
+const admin_sessions_controller_1 = require("../controllers/admin.sessions.controller");
+const admin_sessions_validators_1 = require("../validators/admin.sessions.validators");
+const router = (0, express_1.Router)();
+router.use(auth_middleware_1.requireAuth, (0, rbac_middleware_1.requireRole)('admin', 'supervisor'));
+router.get('/', (0, validation_middleware_1.validate)(admin_sessions_validators_1.ListSessionsQuery), admin_sessions_controller_1.listSessionsCtrl);
+router.get('/:id', (0, validation_middleware_1.validate)(admin_sessions_validators_1.SessionIdParams), admin_sessions_controller_1.getSessionCtrl);
+exports.default = router;

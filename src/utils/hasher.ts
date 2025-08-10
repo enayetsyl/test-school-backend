@@ -9,35 +9,32 @@ type BcryptLib = {
   compare(data: string, encrypted: string): Promise<boolean>;
 };
 
-let primary: BcryptLib | undefined;
-let fallback: BcryptLib | undefined;
-
-try {
-  primary = (await import('bcrypt')) as unknown as BcryptLib;
-} catch {
-  // ignore load error
-}
-try {
-  fallback = (await import('bcryptjs')) as unknown as BcryptLib;
-} catch {
-  // ignore load error
-}
-
-const libCandidate = primary ?? fallback;
-if (!libCandidate) {
-  throw new Error('No bcrypt/bcryptjs available. Please install at least one.');
-}
-const lib: BcryptLib = libCandidate; // ✅ Now TS knows it's defined
-
 const DEFAULT_ROUNDS = 10 as const;
+
+// Lazy-load bcrypt with fallback to bcryptjs (no top-level await)
+const libPromise: Promise<BcryptLib> = (async () => {
+  try {
+    const mod = await import('bcrypt');
+    return mod as unknown as BcryptLib;
+  } catch {
+    try {
+      const mod = await import('bcryptjs');
+      return mod as unknown as BcryptLib;
+    } catch {
+      throw new Error('No bcrypt/bcryptjs available. Please install at least one.');
+    }
+  }
+})();
 
 export async function hashPassword(
   plain: string,
   rounds: number = DEFAULT_ROUNDS,
 ): Promise<string> {
+  const lib = await libPromise;
   return lib.hash(plain, rounds);
 }
 
 export async function comparePassword(plain: string, hash: string): Promise<boolean> {
+  const lib = await libPromise;
   return lib.compare(plain, hash);
 }

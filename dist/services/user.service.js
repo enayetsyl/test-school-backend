@@ -1,15 +1,21 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.findUserByEmail = findUserByEmail;
+exports.createUser = createUser;
+exports.markEmailVerified = markEmailVerified;
+exports.updatePassword = updatePassword;
 // src/services/user.service.ts
-import { User } from '../models/User';
-export async function findUserByEmail(email) {
-    return User.findOne({ email });
+const User_1 = require("../models/User");
+async function findUserByEmail(email) {
+    return User_1.User.findOne({ email });
 }
-export async function createUser(data) {
-    const user = await User.create({ ...data, emailVerified: false, status: 'active' });
+async function createUser(data) {
+    const user = await User_1.User.create({ ...data, emailVerified: false, status: 'active' });
     return user;
 }
-export async function markEmailVerified(userId) {
-    await User.updateOne({ _id: userId }, { $set: { emailVerified: true } });
+async function markEmailVerified(userId) {
+    await User_1.User.updateOne({ _id: userId }, { $set: { emailVerified: true } });
 }
-export async function updatePassword(userId, passwordHash) {
-    await User.updateOne({ _id: userId }, { $set: { passwordHash } });
+async function updatePassword(userId, passwordHash) {
+    await User_1.User.updateOne({ _id: userId }, { $set: { passwordHash } });
 }

@@ -1,16 +1,23 @@
-import { Types } from 'mongoose';
-import { ExamSession } from '../models/ExamSession';
-import { getIO } from '../config/socket';
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.registerExamSocketHandlers = registerExamSocketHandlers;
+exports.emitSessionStart = emitSessionStart;
+exports.emitSessionAnswer = emitSessionAnswer;
+exports.emitSessionViolation = emitSessionViolation;
+exports.emitSessionSubmit = emitSessionSubmit;
+const mongoose_1 = require("mongoose");
+const ExamSession_1 = require("../models/ExamSession");
+const socket_1 = require("../config/socket");
 const roomFor = (id) => `session:${id}`;
 // Track rooms we should emit timer ticks to
 const activeSessionIds = new Set();
 let timerStarted = false;
-export function registerExamSocketHandlers(io) {
+function registerExamSocketHandlers(io) {
     io.on('connection', (socket) => {
         const { sub: userId, role } = socket.data.user;
         socket.on('session:join', async (payload, ack) => {
             try {
-                const s = await ExamSession.findById(payload.sessionId)
+                const s = await ExamSession_1.ExamSession.findById(payload.sessionId)
                     .select('_id userId status deadlineAt step')
                     .lean();
                 if (!s)
@@ -46,13 +53,13 @@ export function registerExamSocketHandlers(io) {
         setInterval(async () => {
             if (activeSessionIds.size === 0)
                 return;
-            const ids = Array.from(activeSessionIds).map((id) => new Types.ObjectId(id));
-            const sessions = await ExamSession.find({ _id: { $in: ids } })
+            const ids = Array.from(activeSessionIds).map((id) => new mongoose_1.Types.ObjectId(id));
+            const sessions = await ExamSession_1.ExamSession.find({ _id: { $in: ids } })
                 .select('_id status deadlineAt')
                 .lean();
             for (const s of sessions) {
                 const timeLeftSec = Math.max(0, Math.floor((new Date(s.deadlineAt).getTime() - Date.now()) / 1000));
-                getIO()
+                (0, socket_1.getIO)()
                     .to(roomFor(String(s._id)))
                     .emit('session:timer', {
                     sessionId: String(s._id),
@@ -64,23 +71,23 @@ export function registerExamSocketHandlers(io) {
     }
 }
 /** Server-side emits for controllers/services */
-export function emitSessionStart(sessionId, data) {
-    getIO()
+function emitSessionStart(sessionId, data) {
+    (0, socket_1.getIO)()
         .to(roomFor(sessionId))
         .emit('session:start', { sessionId, ...data });
 }
-export function emitSessionAnswer(sessionId, data) {
-    getIO()
+function emitSessionAnswer(sessionId, data) {
+    (0, socket_1.getIO)()
         .to(roomFor(sessionId))
         .emit('session:answer', { sessionId, ...data });
 }
-export function emitSessionViolation(sessionId, data) {
-    getIO()
+function emitSessionViolation(sessionId, data) {
+    (0, socket_1.getIO)()
         .to(roomFor(sessionId))
         .emit('session:violation', { sessionId, ...data });
 }
-export function emitSessionSubmit(sessionId, data) {
-    getIO()
+function emitSessionSubmit(sessionId, data) {
+    (0, socket_1.getIO)()
         .to(roomFor(sessionId))
         .emit('session:submit', { sessionId, ...data });
 }

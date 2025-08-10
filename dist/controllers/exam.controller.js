@@ -1,8 +1,11 @@
-import { asyncHandler } from '../utils/asyncHandler';
-import { sendOk, sendCreated } from '../utils/respond';
-import { startExam, answerQuestion, submitExam, getSessionStatus, recordViolation, getLatestResultForUser, } from '../services/exam.service';
-import { emitSessionStart, emitSessionAnswer, emitSessionViolation, emitSessionSubmit, } from '../sockets/exam.socket';
-export const startCtrl = asyncHandler(async (req, res) => {
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.latestResultCtrl = exports.violationCtrl = exports.statusCtrl = exports.submitCtrl = exports.answerCtrl = exports.startCtrl = void 0;
+const asyncHandler_1 = require("../utils/asyncHandler");
+const respond_1 = require("../utils/respond");
+const exam_service_1 = require("../services/exam.service");
+const exam_socket_1 = require("../sockets/exam.socket");
+exports.startCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
     const step = Number(req.query.step);
     const client = {
@@ -14,16 +17,16 @@ export const startCtrl = asyncHandler(async (req, res) => {
             ? { sebHeadersPresent: true }
             : {}),
     };
-    const out = await startExam({ userId, step, client });
-    emitSessionStart(out.sessionId, {
+    const out = await (0, exam_service_1.startExam)({ userId, step, client });
+    (0, exam_socket_1.emitSessionStart)(out.sessionId, {
         userId,
         step,
         deadlineAt: out.deadlineAt.toISOString?.() ?? String(out.deadlineAt),
         totalQuestions: out.totalQuestions,
     });
-    return sendCreated(res, out, 'Exam started');
+    return (0, respond_1.sendCreated)(res, out, 'Exam started');
 });
-export const answerCtrl = asyncHandler(async (req, res) => {
+exports.answerCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
     const { sessionId, questionId, selectedIndex, elapsedMs } = req.body;
     const payload = {
@@ -33,48 +36,48 @@ export const answerCtrl = asyncHandler(async (req, res) => {
         selectedIndex,
         ...(elapsedMs !== undefined ? { elapsedMs } : {}),
     };
-    const out = await answerQuestion(payload);
+    const out = await (0, exam_service_1.answerQuestion)(payload);
     const answeredAt = new Date().toISOString();
-    emitSessionAnswer(req.body.sessionId, {
+    (0, exam_socket_1.emitSessionAnswer)(req.body.sessionId, {
         questionId: req.body.questionId,
         selectedIndex: req.body.selectedIndex,
         answeredAt,
     });
-    return sendOk(res, out, 'Answer saved');
+    return (0, respond_1.sendOk)(res, out, 'Answer saved');
 });
-export const submitCtrl = asyncHandler(async (req, res) => {
+exports.submitCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
     const { sessionId } = req.body;
-    const out = await submitExam({ userId, sessionId, reason: 'user' });
-    emitSessionSubmit(req.body.sessionId, {
+    const out = await (0, exam_service_1.submitExam)({ userId, sessionId, reason: 'user' });
+    (0, exam_socket_1.emitSessionSubmit)(req.body.sessionId, {
         status: out.status,
         scorePct: out.scorePct,
         ...(out.awardedLevel ? { awardedLevel: out.awardedLevel } : {}),
         proceedNext: out.proceedNext,
     });
-    return sendOk(res, out, 'Exam submitted');
+    return (0, respond_1.sendOk)(res, out, 'Exam submitted');
 });
-export const statusCtrl = asyncHandler(async (req, res) => {
+exports.statusCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
     const { sessionId } = req.params;
-    const out = await getSessionStatus({ userId, sessionId });
-    return sendOk(res, out, 'Status');
+    const out = await (0, exam_service_1.getSessionStatus)({ userId, sessionId });
+    return (0, respond_1.sendOk)(res, out, 'Status');
 });
-export const violationCtrl = asyncHandler(async (req, res) => {
+exports.violationCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
     const { sessionId, type, meta } = req.body;
-    const out = await recordViolation({
+    const out = await (0, exam_service_1.recordViolation)({
         userId,
         sessionId,
         type,
         ...(meta ? { meta } : {}),
     });
-    emitSessionViolation(sessionId, { type, occurredAt: new Date().toISOString() });
-    return sendOk(res, out, 'Violation recorded');
+    (0, exam_socket_1.emitSessionViolation)(sessionId, { type, occurredAt: new Date().toISOString() });
+    return (0, respond_1.sendOk)(res, out, 'Violation recorded');
 });
-export const latestResultCtrl = asyncHandler(async (req, res) => {
+exports.latestResultCtrl = (0, asyncHandler_1.asyncHandler)(async (req, res) => {
     const userId = req.user.sub;
-    const out = await getLatestResultForUser({ userId });
+    const out = await (0, exam_service_1.getLatestResultForUser)({ userId });
     // Return null when nothing found (consistent with cert API style)
-    return sendOk(res, { latest: out }, 'Latest exam result');
+    return (0, respond_1.sendOk)(res, { latest: out }, 'Latest exam result');
 });

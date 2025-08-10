@@ -1,15 +1,21 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.generateCertificatePDF = generateCertificatePDF;
 // src/utils/pdf.ts
-import fs from 'fs-extra';
-import path from 'node:path';
-import PDFDocument from 'pdfkit';
-export async function generateCertificatePDF(input) {
-    await fs.ensureDir(path.dirname(input.outPath));
-    const doc = new PDFDocument({
+const fs_extra_1 = __importDefault(require("fs-extra"));
+const node_path_1 = __importDefault(require("node:path"));
+const pdfkit_1 = __importDefault(require("pdfkit"));
+async function generateCertificatePDF(input) {
+    await fs_extra_1.default.ensureDir(node_path_1.default.dirname(input.outPath));
+    const doc = new pdfkit_1.default({
         size: 'A4',
         margins: { top: 72, right: 72, bottom: 72, left: 72 },
     });
     const tmp = `${input.outPath}.tmp`;
-    const stream = fs.createWriteStream(tmp);
+    const stream = fs_extra_1.default.createWriteStream(tmp);
     doc.pipe(stream);
     // Header
     doc.fontSize(22).text('Test_School – Certificate of Digital Competency', { align: 'center' });
@@ -46,6 +52,6 @@ export async function generateCertificatePDF(input) {
         stream.on('finish', resolve);
         stream.on('error', reject);
     });
-    await fs.move(tmp, input.outPath, { overwrite: true });
+    await fs_extra_1.default.move(tmp, input.outPath, { overwrite: true });
     return { path: input.outPath };
 }
